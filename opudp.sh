@@ -2,9 +2,17 @@
 # ============================================================
 # OPUDP PANEL - ZIVPN Pro Multi-User UDP Tunnel
 # Default port: 5667 (standard ZIVPN port)
+# Compatible with Ubuntu 18.04+ and Debian 10+ (with or without sudo)
 # Author: @OfficialOnePesewa | Telegram: @OfficialOnePesewa
-# Version: 2.1 (Port 5667 + GeoIP + Device Binding)
+# Version: 2.3 (Root check, no sudo dependency)
 # ============================================================
+
+# ------------------- ROOT CHECK -------------------
+if [[ $EUID -ne 0 ]]; then
+    echo -e "\033[0;31mERROR: This script must be run as root.\033[0m"
+    echo -e "\033[1;33mUse: su -  (then run the script) OR sudo ./opudp.sh\033[0m"
+    exit 1
+fi
 
 set -e
 
@@ -17,18 +25,42 @@ BOLD='\033[1m'
 NC='\033[0m'
 
 # ------------------- CONFIGURATION -------------------
-BASE_PORT=5667               # <-- CHANGED to standard ZIVPN port
+BASE_PORT=5667
 CONF_DIR="/etc/zivpn/users"
 SERVICE_DIR="/etc/systemd/system"
 BIN_PATH="/usr/local/bin/udp-server"
 DB_FILE="/etc/zivpn/users.db"
 BACKUP_DIR="/etc/zivpn/backups"
 LOG_DIR="/var/log/zivpn"
-PUBLIC_IP=$(curl -s ifconfig.me || echo "127.0.0.1")
+PUBLIC_IP=""
 
-# ------------------- FETCH GEO IP INFO -------------------
+# ------------------- PRE-FLIGHT CHECKS -------------------
+check_os_arch() {
+    if ! command -v apt &> /dev/null; then
+        echo -e "${RED}Error: This script requires a Debian/Ubuntu based system.${NC}"
+        exit 1
+    fi
+
+    ARCH=$(uname -m)
+    if [[ "$ARCH" != "x86_64" ]]; then
+        echo -e "${RED}Error: The ZIVPN binary is only available for x86_64 architecture.${NC}"
+        echo -e "${YELLOW}Your architecture: $ARCH${NC}"
+        exit 1
+    fi
+
+    if ! command -v systemctl &> /dev/null; then
+        echo -e "${RED}Error: systemd is required but not found.${NC}"
+        exit 1
+    fi
+}
+
+get_public_ip() {
+    PUBLIC_IP=$(curl -s --max-time 5 ifconfig.me || curl -s --max-time 5 ipv4.icanhazip.com || echo "127.0.0.1")
+}
+
+# ------------------- GEO IP INFO (with fallback) -------------------
 get_geo_info() {
-    GEO_DATA=$(curl -s ipinfo.io)
+    GEO_DATA=$(curl -s --max-time 5 ipinfo.io || echo '{"country":"Unknown","city":"Unknown","org":"Unknown"}')
     COUNTRY=$(echo "$GEO_DATA" | grep -o '"country": "[^"]*"' | cut -d'"' -f4)
     CITY=$(echo "$GEO_DATA" | grep -o '"city": "[^"]*"' | cut -d'"' -f4)
     ISP=$(echo "$GEO_DATA" | grep -o '"org": "[^"]*"' | cut -d'"' -f4 | cut -d' ' -f1)
@@ -64,8 +96,19 @@ show_server_info() {
 
 # ------------------- DEPENDENCIES -------------------
 install_deps() {
-    apt update -y && apt install -y iptables wget curl socat jq bc cron
+    apt update -y
+    apt install -y iptables wget curl jq cron ufw
     systemctl enable cron
+}
+
+configure_firewall() {
+    if command -v ufw &> /dev/null; then
+        ufw allow $BASE_PORT:$((BASE_PORT+100))/udp comment 'ZIVPN UDP Range'
+        ufw reload 2>/dev/null || true
+    fi
+    # Also open with iptables directly
+    iptables -I INPUT -p udp --dport $BASE_PORT:$((BASE_PORT+100)) -j ACCEPT
+    iptables -I OUTPUT -p udp --sport $BASE_PORT:$((BASE_PORT+100)) -j ACCEPT
 }
 
 fetch_binary() {
@@ -217,7 +260,7 @@ EOF
     echo -e "   Password  : $temp_pass"
     echo -e "   Auto‑delete after $(date -d "@$expiry_time")"
 
-    (sleep $((minutes*60)) && sudo systemctl stop zivpn-user-test && sudo rm -f "$SERVICE_DIR/zivpn-user-test.service" && sudo systemctl daemon-reload && sudo sed -i '/^test|/d' "$DB_FILE") &
+    (sleep $((minutes*60)) && systemctl stop zivpn-user-test && rm -f "$SERVICE_DIR/zivpn-user-test.service" && systemctl daemon-reload && sed -i '/^test|/d' "$DB_FILE") &
 }
 
 cleanup_expired() {
@@ -381,7 +424,10 @@ main_menu() {
 }
 
 # ------------------- INIT -------------------
+check_os_arch
+get_public_ip
 install_deps
+configure_firewall
 fetch_binary
 init_db
 

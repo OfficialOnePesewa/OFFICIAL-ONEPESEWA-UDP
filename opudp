@@ -1,0 +1,530 @@
+#!/bin/bash
+# OfficialOnePesewa ZIVPN Dashboard v3.2 - Bandwidth Tracking Edition
+
+CONFIG="/etc/zivpn/config.json"
+DB="/etc/zivpn/users.db"
+LOCK="/etc/zivpn/db.lock"
+
+# --- Colors ---
+C="\e[1;36m"
+G="\e[1;32m"
+R="\e[1;31m"
+Y="\e[1;33m"
+M="\e[1;35m"
+NC="\e[0m"
+BOLD="\e[1m"
+
+# --- Auto-install jq ---
+if ! command -v jq &>/dev/null; then
+    apt-get install -y jq -qq &>/dev/null
+fi
+
+# --- Geo-IP with fallback ---
+GEO=$(curl -4 -s --max-time 8 "https://ipapi.co/json/" 2>/dev/null)
+IP=$(echo "$GEO" | grep -oP '"ip":\s*"\K[^"]+')
+if [ -z "$IP" ]; then
+    GEO=$(curl -4 -s --max-time 8 "http://ip-api.com/json/" 2>/dev/null)
+    IP=$(echo "$GEO"      | grep -oP '"query":\s*"\K[^"]+')
+    CITY=$(echo "$GEO"    | grep -oP '"city":\s*"\K[^"]+')
+    COUNTRY=$(echo "$GEO" | grep -oP '"country":\s*"\K[^"]+')
+    ISP=$(echo "$GEO"     | grep -oP '"isp":\s*"\K[^"]+')
+else
+    CITY=$(echo "$GEO"    | grep -oP '"city":\s*"\K[^"]+')
+    COUNTRY=$(echo "$GEO" | grep -oP '"country_name":\s*"\K[^"]+')
+    ISP=$(echo "$GEO"     | grep -oP '"org":\s*"\K[^"]+')
+fi
+[ -z "$IP" ]      && IP="N/A"
+[ -z "$CITY" ]    && CITY="Unknown"
+[ -z "$COUNTRY" ] && COUNTRY="Unknown"
+[ -z "$ISP" ]     && ISP="Unknown"
+OS_INFO=$(grep "PRETTY_NAME" /etc/os-release | cut -d '"' -f 2)
+
+# ============================================================
+# HELPERS
+# ============================================================
+
+quota_to_bytes() {
+    local q="${1^^}"
+    if [[ "$q" =~ ^([0-9]+)GB$ ]]; then echo $(( ${BASH_REMATCH[1]} * 1073741824 ))
+    elif [[ "$q" =~ ^([0-9]+)MB$ ]]; then echo $(( ${BASH_REMATCH[1]} * 1048576 ))
+    elif [[ "$q" =~ ^([0-9]+)$ ]];   then echo "${BASH_REMATCH[1]}"
+    else echo "0"; fi
+}
+
+bytes_to_human() {
+    local b=${1:-0}
+    if   [ "$b" -ge 1073741824 ]; then printf "%.2fGB" "$(echo "scale=2; $b/1073741824" | bc)"
+    elif [ "$b" -ge 1048576 ];    then printf "%.2fMB" "$(echo "scale=2; $b/1048576" | bc)"
+    elif [ "$b" -ge 1024 ];       then printf "%.2fKB" "$(echo "scale=2; $b/1024" | bc)"
+    else printf "%dB" "$b"; fi
+}
+
+progress_bar() {
+    local used=$1 total=$2 width=16
+    [ "${total:-0}" -eq 0 ] && printf "[????????????????] N/A" && return
+    local pct=$(( used * 100 / total ))
+    [ "$pct" -gt 100 ] && pct=100
+    local filled=$(( pct * width / 100 ))
+    local empty=$(( width - filled ))
+    local bar=""
+    for ((i=0; i<filled; i++)); do bar="${bar}█"; done
+    for ((i=0; i<empty;  i++)); do bar="${bar}░"; done
+    printf "[%s] %d%%" "$bar" "$pct"
+}
+
+# ============================================================
+# MONITOR SETUP
+# ============================================================
+
+setup_monitor() {
+    if [ ! -f /usr/local/bin/opudp-monitor ]; then
+        echo -e "${Y}Downloading bandwidth monitor...${NC}"
+        wget -qO /usr/local/bin/opudp-monitor \
+            https://raw.githubusercontent.com/OfficialOnePesewa/udp-zivpn/main/opudp-monitor
+        chmod +x /usr/local/bin/opudp-monitor
+    fi
+
+    if [ ! -f /etc/systemd/system/opudp-monitor.service ]; then
+        cat <<EOF > /etc/systemd/system/opudp-monitor.service
+[Unit]
+Description=OPUDP Bandwidth Monitor
+After=zivpn.service
+
+[Service]
+ExecStart=/usr/local/bin/opudp-monitor
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+        systemctl daemon-reload
+        systemctl enable opudp-monitor &>/dev/null
+        systemctl start  opudp-monitor &>/dev/null
+    fi
+
+    systemctl is-active opudp-monitor &>/dev/null || \
+        systemctl start opudp-monitor &>/dev/null
+}
+
+# ============================================================
+# BANNER
+# ============================================================
+
+banner() {
+    clear
+    DATE_TIME=$(date +"%A, %d %B %Y - %H:%M:%S")
+    local MON_STATUS
+    systemctl is-active opudp-monitor &>/dev/null \
+        && MON_STATUS="${G}● Running${NC}" \
+        || MON_STATUS="${R}● Stopped${NC}"
+
+    echo -e "${C}${BOLD}================================================================${NC}"
+    echo -e "${G}${BOLD}   ██████╗ ██████╗ ██╗   ██╗██████╗ ██████╗            ${NC}"
+    echo -e "${G}${BOLD}  ██╔═══██╗██╔══██╗██║   ██║██╔══██╗██╔══██╗           ${NC}"
+    echo -e "${G}${BOLD}  ██║   ██║██████╔╝██║   ██║██║  ██║██████╔╝           ${NC}"
+    echo -e "${G}${BOLD}  ██║   ██║██╔═══╝ ██║   ██║██║  ██║██╔═══╝            ${NC}"
+    echo -e "${G}${BOLD}  ╚██████╔╝██║     ╚██████╔╝██████╔╝██║                ${NC}"
+    echo -e "${G}${BOLD}   ╚═════╝ ╚═╝      ╚═════╝ ╚═════╝ ╚═╝   ${Y}VPS PANEL    ${NC}"
+    echo -e "${C}${BOLD}================================================================${NC}"
+    echo -e "${M} 👑 Admin    :${NC} @OfficialOnePesewa"
+    echo -e "${M} 💻 OS       :${NC} ${OS_INFO}"
+    echo -e "${M} 🌍 Server   :${NC} ${IP} (${CITY}, ${COUNTRY})"
+    echo -e "${M} 🏢 ISP      :${NC} ${ISP}"
+    echo -e "${M} ⏰ Time     :${NC} ${DATE_TIME}"
+    echo -e "${M} 📡 Monitor  :${NC} $(echo -e $MON_STATUS)"
+    echo -e "${C}${BOLD}================================================================${NC}"
+}
+
+goodbye() {
+    clear
+    echo -e "${C}${BOLD}================================================================${NC}"
+    echo -e "${G}${BOLD}   ██████╗ ██████╗ ██╗   ██╗██████╗ ██████╗            ${NC}"
+    echo -e "${G}${BOLD}  ██╔═══██╗██╔══██╗██║   ██║██╔══██╗██╔══██╗           ${NC}"
+    echo -e "${G}${BOLD}  ██║   ██║██████╔╝██║   ██║██║  ██║██████╔╝           ${NC}"
+    echo -e "${G}${BOLD}  ██║   ██║██╔═══╝ ██║   ██║██║  ██║██╔═══╝            ${NC}"
+    echo -e "${G}${BOLD}  ╚██████╔╝██║     ╚██████╔╝██████╔╝██║                ${NC}"
+    echo -e "${G}${BOLD}   ╚═════╝ ╚═╝      ╚═════╝ ╚═════╝ ╚═╝   ${Y}VPS PANEL    ${NC}"
+    echo -e "${C}${BOLD}================================================================${NC}"
+    echo -e "${G}${BOLD}        Thanks For Using OP Panel Script! 🤗${NC}"
+    echo -e "${Y}        We Wish To See You Again Soon! 👋${NC}"
+    echo -e "${M}        Admin   : @OfficialOnePesewa${NC}"
+    echo -e "${M}        Channel : https://t.me/OfficialOnePesewa${NC}"
+    echo -e "${C}${BOLD}================================================================${NC}"
+    echo ""
+}
+
+# ============================================================
+# USER MANAGEMENT
+# ============================================================
+
+add_user() {
+    echo -e "\n${Y}--- CREATE NEW USER ---${NC}"
+    read -p "Password: " pass
+    read -p "Validity (Days): " days
+    read -p "Quota (e.g. 10GB or 500MB): " quota_input
+    read -p "Device ID (Optional, press Enter to skip): " devid
+
+    local exp quota_bytes
+    exp=$(date -d "+$days days" +%Y-%m-%d)
+    quota_bytes=$(quota_to_bytes "$quota_input")
+
+    if [ -f "$CONFIG" ]; then
+        jq --arg p "$pass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_tmp.json \
+            && mv /tmp/zivpn_tmp.json "$CONFIG"
+    fi
+
+    # DB format: pass|exp|quota_bytes|devid|used_bytes
+    (
+        flock -x 200
+        echo "$pass|$exp|$quota_bytes|${devid:-None}|0" >> "$DB"
+    ) 200>"$LOCK"
+
+    systemctl restart zivpn 2>/dev/null
+
+    echo -e "\n${C}=========================================${NC}"
+    echo -e "${G}${BOLD}       🎉 NEW USER SUCCESSFULLY ADDED 🎉${NC}"
+    echo -e "${C}=========================================${NC}"
+    echo -e "${Y} 👤 Password   :${NC} $pass"
+    echo -e "${Y} ⏳ Expiry     :${NC} $exp ($days Days)"
+    echo -e "${Y} 📊 Quota      :${NC} $quota_input ($(bytes_to_human "$quota_bytes"))"
+    echo -e "${Y} 📱 Device ID  :${NC} ${devid:-None}"
+    echo -e "${C}-----------------------------------------${NC}"
+    echo -e "${M} 🌍 Server IP  :${NC} $IP"
+    echo -e "${M} 📍 Location   :${NC} $CITY, $COUNTRY"
+    echo -e "${C}=========================================${NC}"
+}
+
+remove_user() {
+    read -p "Password to remove: " pass
+    if [ -f "$CONFIG" ]; then
+        jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json \
+            && mv /tmp/zivpn_tmp.json "$CONFIG"
+    fi
+    (
+        flock -x 200
+        [ -f "$DB" ] && sed -i "/^$pass|/d" "$DB"
+        # Remove from IP map too
+        [ -f /etc/zivpn/ip_user.map ] && sed -i "/ $pass$/d" /etc/zivpn/ip_user.map
+    ) 200>"$LOCK"
+    systemctl restart zivpn 2>/dev/null
+    echo -e "${G}User '$pass' removed.${NC}"
+}
+
+renew_user() {
+    echo -e "\n${Y}--- RENEW / EXTEND USER ---${NC}"
+    [ ! -f "$DB" ] && echo -e "${R}No user database found.${NC}" && return
+    awk -F'|' '{print NR". "$1" | Exp: "$2}' "$DB"
+    read -p "Enter password to renew: " pass
+    read -p "Add how many days: " days
+
+    if grep -q "^$pass|" "$DB"; then
+        local OLD_EXP TODAY BASE NEW_EXP
+        OLD_EXP=$(grep "^$pass|" "$DB" | cut -d'|' -f2)
+        TODAY=$(date +%Y-%m-%d)
+        BASE=$OLD_EXP
+        [[ "$OLD_EXP" < "$TODAY" ]] && BASE="$TODAY"
+        NEW_EXP=$(date -d "$BASE +$days days" +%Y-%m-%d)
+        (
+            flock -x 200
+            sed -i "s/^$pass|$OLD_EXP|/$pass|$NEW_EXP|/" "$DB"
+        ) 200>"$LOCK"
+        echo -e "${G}✔ '$pass' renewed → new expiry: $NEW_EXP${NC}"
+    else
+        echo -e "${R}User not found.${NC}"
+    fi
+}
+
+cleanup_expired() {
+    echo -e "\n${Y}--- CLEANUP EXPIRED USERS ---${NC}"
+    [ ! -f "$DB" ] && echo -e "${R}No user database found.${NC}" && return
+    local TODAY COUNT=0
+    TODAY=$(date +%Y-%m-%d)
+    local tmpfile
+    tmpfile=$(mktemp)
+
+    while IFS='|' read -r pass exp quota devid used; do
+        if [[ "$exp" < "$TODAY" ]]; then
+            [ -f "$CONFIG" ] && jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" \
+                > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
+            [ -f /etc/zivpn/ip_user.map ] && sed -i "/ $pass$/d" /etc/zivpn/ip_user.map
+            echo -e "${R}Removed: $pass (expired $exp)${NC}"
+            COUNT=$((COUNT + 1))
+        else
+            echo "$pass|$exp|$quota|${devid:-None}|${used:-0}" >> "$tmpfile"
+        fi
+    done < "$DB"
+
+    (flock -x 200; mv "$tmpfile" "$DB") 200>"$LOCK"
+    [ "$COUNT" -gt 0 ] && systemctl restart zivpn 2>/dev/null
+    echo -e "${G}Done. Removed $COUNT expired user(s).${NC}"
+}
+
+# ============================================================
+# OPTION 11 — BANDWIDTH + EXPIRY (with live usage tracking)
+# ============================================================
+
+bandwidth_expiry() {
+    echo -e "\n${Y}--- BANDWIDTH + EXPIRY INFO ---${NC}"
+    [ ! -f "$DB" ] || [ ! -s "$DB" ] && echo -e "${R}No users found.${NC}" && return
+
+    local TODAY
+    TODAY=$(date +%Y-%m-%d)
+
+    printf "\n${C}%-18s %-12s %-9s %-9s %-9s %-20s %s${NC}\n" \
+        "Password" "Expiry" "Quota" "Used" "Left" "Progress" "Status"
+    echo "$(printf '%0.s─' {1..100})"
+
+    while IFS='|' read -r pass exp quota devid used; do
+        used="${used:-0}"
+        quota="${quota:-0}"
+
+        local quota_h used_h left_h bar status_str
+        quota_h=$(bytes_to_human "$quota")
+        used_h=$(bytes_to_human "$used")
+
+        if [ "$quota" -gt 0 ]; then
+            local left=$(( quota - used ))
+            [ "$left" -lt 0 ] && left=0
+            left_h=$(bytes_to_human "$left")
+            bar=$(progress_bar "$used" "$quota")
+        else
+            left_h="∞"
+            bar="[Unlimited      ]"
+        fi
+
+        local days_left=0
+        if [[ "$exp" > "$TODAY" ]]; then
+            days_left=$(( ( $(date -d "$exp" +%s) - $(date +%s) ) / 86400 ))
+        fi
+
+        # Determine status
+        if [[ "$exp" < "$TODAY" ]]; then
+            status_str="${R}EXPIRED${NC}"
+        elif [ "$quota" -gt 0 ] && [ "$used" -ge "$quota" ]; then
+            status_str="${R}QUOTA FULL${NC}"
+        else
+            status_str="${G}Active (${days_left}d)${NC}"
+        fi
+
+        printf "%-18s %-12s %-9s %-9s %-9s %-20s " \
+            "$pass" "$exp" "$quota_h" "$used_h" "$left_h" "$bar"
+        echo -e "$status_str"
+
+    done < "$DB"
+    echo ""
+    echo -e "${Y}📡 Bandwidth monitor updates every 60 seconds.${NC}"
+}
+
+# ============================================================
+# OPTION 12 — RESET BANDWIDTH (per user)
+# ============================================================
+
+reset_bandwidth() {
+    echo -e "\n${Y}--- RESET USER BANDWIDTH ---${NC}"
+    [ ! -f "$DB" ] || [ ! -s "$DB" ] && echo -e "${R}No users found.${NC}" && return
+    echo -e "${C}Current users:${NC}"
+    awk -F'|' '{print NR". "$1" | Used: "$5" bytes"}' "$DB"
+    echo ""
+    read -p "Enter password to reset (or 'all' to reset everyone): " target
+
+    local tmpfile
+    tmpfile=$(mktemp)
+    (
+        flock -x 200
+        while IFS='|' read -r p exp quota devid used; do
+            if [ "$target" = "all" ] || [ "$p" = "$target" ]; then
+                echo "$p|$exp|$quota|${devid:-None}|0" >> "$tmpfile"
+                echo -e "${G}Reset: $p${NC}"
+            else
+                echo "$p|$exp|$quota|${devid:-None}|${used:-0}" >> "$tmpfile"
+            fi
+        done < "$DB"
+        mv "$tmpfile" "$DB"
+    ) 200>"$LOCK"
+    # Also zero iptables counters
+    iptables -Z ZIVPN_USAGE 2>/dev/null
+}
+
+# ============================================================
+# OTHER OPTIONS
+# ============================================================
+
+connection_stats() {
+    echo -e "\n${Y}--- CONNECTION STATS ---${NC}"
+    echo -e "${C}Active UDP sockets on port 5667:${NC}"
+    ss -anu | grep ':5667' | wc -l | xargs echo "  Total:"
+    echo ""
+    echo -e "${C}Top connected IPs:${NC}"
+    ss -anu | grep ':5667' | awk '{print $5}' | cut -d':' -f1 | \
+        sort | uniq -c | sort -rn | head -10
+    echo ""
+    echo -e "${C}ZIVPN Service:${NC}"
+    systemctl is-active zivpn 2>/dev/null | xargs echo "  Status:"
+    echo ""
+    echo -e "${C}Monitor Service:${NC}"
+    systemctl is-active opudp-monitor 2>/dev/null | xargs echo "  Status:"
+}
+
+speed_test() {
+    echo -e "\n${Y}--- SPEED TEST ---${NC}"
+    if ! command -v speedtest-cli &>/dev/null; then
+        pip3 install speedtest-cli --break-system-packages -q 2>/dev/null \
+            || apt-get install -y speedtest-cli -qq
+    fi
+    speedtest-cli --simple 2>/dev/null || echo -e "${R}Speed test failed.${NC}"
+}
+
+backup_data() {
+    local BACKUP_FILE="/root/zivpn_backup_$(date +%Y%m%d_%H%M%S).tar.gz"
+    tar -czf "$BACKUP_FILE" /etc/zivpn/ 2>/dev/null
+    echo -e "${G}✔ Backup: $BACKUP_FILE${NC}"
+    ls -lh "$BACKUP_FILE"
+}
+
+restore_backup() {
+    ls /root/zivpn_backup_*.tar.gz 2>/dev/null || { echo -e "${R}No backups found.${NC}"; return; }
+    read -p "Enter backup filename: " bfile
+    [ -f "$bfile" ] || { echo -e "${R}Not found.${NC}"; return; }
+    tar -xzf "$bfile" -C / 2>/dev/null
+    systemctl restart zivpn 2>/dev/null
+    echo -e "${G}✔ Restored. ZIVPN restarted.${NC}"
+}
+
+change_port_range() {
+    read -p "New start port: " START
+    read -p "New end port: "   END
+    iptables -t nat -D PREROUTING -p udp --dport 6000:19999 -j DNAT --to-destination :5667 2>/dev/null
+    iptables -D INPUT -p udp --dport 6000:19999 -j ACCEPT 2>/dev/null
+    iptables -I INPUT -p udp --dport "${START}:${END}" -j ACCEPT
+    iptables -t nat -A PREROUTING -p udp --dport "${START}:${END}" -j DNAT --to-destination :5667
+    netfilter-persistent save 2>/dev/null
+    echo -e "${G}✔ NAT port range: ${START}-${END}${NC}"
+}
+
+set_conn_limit() {
+    read -p "Max connections per IP (0 = no limit): " LIMIT
+    iptables -D INPUT -p udp --dport 5667 -m connlimit --connlimit-above 1 -j DROP 2>/dev/null
+    if [ "$LIMIT" -gt 0 ]; then
+        iptables -I INPUT -p udp --dport 5667 -m connlimit --connlimit-above "$LIMIT" -j DROP
+        netfilter-persistent save 2>/dev/null
+        echo -e "${G}✔ Limit: $LIMIT per IP${NC}"
+    else
+        echo -e "${G}✔ Limit removed.${NC}"
+    fi
+}
+
+trial_user() {
+    read -p "Minutes (1-60): " mins
+    local pass="trial_$(openssl rand -hex 2)"
+    if [ -f "$CONFIG" ]; then
+        jq --arg p "$pass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_tmp.json \
+            && mv /tmp/zivpn_tmp.json "$CONFIG"
+        systemctl restart zivpn 2>/dev/null
+    fi
+    local exp
+    exp=$(date -d "+${mins} minutes" +"%Y-%m-%d %H:%M")
+    # Add trial user to DB with 0 quota (unlimited for trial)
+    (flock -x 200; echo "$pass|$exp|0|Trial|0" >> "$DB") 200>"$LOCK"
+    echo -e "${G}Trial: ${Y}$pass${G} | Expires: $exp${NC}"
+    (
+        sleep $((mins * 60))
+        [ -f "$CONFIG" ] && jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" \
+            > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
+        systemctl restart zivpn 2>/dev/null
+        (flock -x 200; sed -i "/^$pass|/d" "$DB") 200>"$LOCK"
+    ) &
+}
+
+# ============================================================
+# STARTUP — ensure monitor is running
+# ============================================================
+setup_monitor
+
+# ============================================================
+# MAIN MENU
+# ============================================================
+while true; do
+    banner
+    echo -e " ${G}1)${NC}  Start ZIVPN         ${G}11)${NC} Bandwidth + Expiry"
+    echo -e " ${G}2)${NC}  Stop ZIVPN          ${G}12)${NC} Reset User Bandwidth"
+    echo -e " ${G}3)${NC}  Restart ZIVPN       ${G}13)${NC} Speed Test"
+    echo -e " ${G}4)${NC}  Status              ${G}14)${NC} Live Logs"
+    echo -e " ${G}5)${NC}  List Users          ${G}15)${NC} Backup All Data"
+    echo -e " ${G}6)${NC}  Add User            ${G}16)${NC} Restore Backup"
+    echo -e " ${G}7)${NC}  Remove User         ${G}17)${NC} Change Port Range"
+    echo -e " ${G}8)${NC}  Renew / Extend User ${Y}18)${NC} Auto-Update Panel"
+    echo -e " ${G}9)${NC}  Cleanup Expired     ${G}19)${NC} Set Connection Limit"
+    echo -e " ${G}10)${NC} Connection Stats    ${G}20)${NC} Trial User (1-60m)"
+    echo -e "${C}----------------------------------------------------------------${NC}"
+    echo -e " ${R}99) UNINSTALL${NC}           ${G}0) Exit${NC}"
+    echo -e "${C}----------------------------------------------------------------${NC}"
+    read -p " Choose [0-99]: " opt
+
+    case $opt in
+        1)  systemctl start   zivpn 2>/dev/null && echo -e "${G}ZIVPN Started.${NC}"   || echo -e "${R}Service not found.${NC}" ;;
+        2)  systemctl stop    zivpn 2>/dev/null && echo -e "${R}ZIVPN Stopped.${NC}"   || echo -e "${R}Service not found.${NC}" ;;
+        3)  systemctl restart zivpn 2>/dev/null && echo -e "${G}ZIVPN Restarted.${NC}" || echo -e "${R}Service not found.${NC}" ;;
+        4)  systemctl status  zivpn 2>/dev/null || echo -e "${R}Service not found.${NC}" ;;
+        5)
+            if [ -f "$DB" ] && [ -s "$DB" ]; then
+                echo -e "\n${C}Password           | Expiry     | Quota      | Used       | DeviceID${NC}"
+                echo "-----------------------------------------------------------------------"
+                while IFS='|' read -r p exp quota devid used; do
+                    printf "%-18s | %-10s | %-10s | %-10s | %s\n" \
+                        "$p" "$exp" "$(bytes_to_human "${quota:-0}")" \
+                        "$(bytes_to_human "${used:-0}")" "${devid:-None}"
+                done < "$DB"
+            else
+                echo -e "${R}No users found.${NC}"
+            fi
+            ;;
+        6)  add_user ;;
+        7)  remove_user ;;
+        8)  renew_user ;;
+        9)  cleanup_expired ;;
+        10) connection_stats ;;
+        11) bandwidth_expiry ;;
+        12) reset_bandwidth ;;
+        13) speed_test ;;
+        14) journalctl -u zivpn -f 2>/dev/null || echo -e "${R}Service not found.${NC}" ;;
+        15) backup_data ;;
+        16) restore_backup ;;
+        17) change_port_range ;;
+        18)
+            echo -e "${Y}Updating panel...${NC}"
+            wget -qO /usr/local/bin/opudp \
+                https://raw.githubusercontent.com/OfficialOnePesewa/udp-zivpn/main/opudp
+            wget -qO /usr/local/bin/opudp-monitor \
+                https://raw.githubusercontent.com/OfficialOnePesewa/udp-zivpn/main/opudp-monitor
+            chmod +x /usr/local/bin/opudp /usr/local/bin/opudp-monitor
+            systemctl restart opudp-monitor 2>/dev/null
+            echo -e "${G}Updated! Restarting...${NC}"
+            sleep 2; exec opudp
+            ;;
+        19) set_conn_limit ;;
+        20) trial_user ;;
+        99)
+            read -p "Type 'yes' to confirm UNINSTALL: " confirm
+            if [ "$confirm" = "yes" ]; then
+                systemctl stop    zivpn opudp-monitor 2>/dev/null
+                systemctl disable zivpn opudp-monitor 2>/dev/null
+                rm -f /etc/systemd/system/zivpn.service
+                rm -f /etc/systemd/system/opudp-monitor.service
+                rm -rf /etc/zivpn
+                rm -f /usr/local/bin/zivpn
+                rm -f /usr/local/bin/opudp
+                rm -f /usr/local/bin/opudp-monitor
+                systemctl daemon-reload
+                echo -e "${R}Fully uninstalled.${NC}"
+                exit 0
+            else
+                echo -e "${Y}Cancelled.${NC}"
+            fi
+            ;;
+        0) goodbye; exit 0 ;;
+        *) echo -e "${R}Invalid option.${NC}" ;;
+    esac
+    echo ""
+    read -p "Press Enter to return to menu..."
+done

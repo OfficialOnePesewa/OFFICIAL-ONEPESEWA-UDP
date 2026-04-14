@@ -80,6 +80,14 @@ case $ARCH in
 esac
 echo -e "${G}   Architecture: $ARCH -> $BIN${NC}"
 
+# Stop existing service and remove binary (fixes "Text file busy")
+echo -e "${Y}[*] Stopping existing ZIVPN service (if any)...${NC}"
+systemctl stop zivpn 2>/dev/null || true
+if [ -f /usr/local/bin/zivpn ]; then
+    echo -e "${Y}[*] Removing old ZIVPN binary...${NC}"
+    rm -f /usr/local/bin/zivpn
+fi
+
 # Download ZIVPN binary
 echo -e "${Y}[3/6] Downloading ZIVPN binary...${NC}"
 wget -q --show-progress -O /usr/local/bin/zivpn \

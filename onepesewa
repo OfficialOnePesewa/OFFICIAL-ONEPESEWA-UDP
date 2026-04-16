@@ -1,5 +1,5 @@
 #!/bin/bash
-# OP UDP PANEL – Professional 3D Dashboard with Device Binding
+# OP UDP PANEL – Professional 3D Dashboard with Device ID Binding Option
 
 CONFIG="/etc/zivpn/config.json"
 DB="/etc/zivpn/users.db"
@@ -10,15 +10,17 @@ CACHE_TTL=300
 RED='\e[1;31m' GRN='\e[1;32m' YLW='\e[1;33m' BLU='\e[1;34m' MAG='\e[1;35m' CYN='\e[1;36m' WHT='\e[1;37m' RST='\e[0m'
 BOLD='\e[1m' DIM='\e[2m'
 
+# Dependencies
 command -v jq &>/dev/null || apt-get install -y jq -qq 2>/dev/null
 command -v bc &>/dev/null || apt-get install -y bc -qq 2>/dev/null
 
-# Geo fetch with fallback (same as before)
+# --- Geo fetch with multiple fallbacks ---
 fetch_geo() {
     if [ -f "$CACHE_FILE" ] && [ $(($(date +%s) - $(stat -c %Y "$CACHE_FILE" 2>/dev/null || echo 0))) -lt $CACHE_TTL ]; then
         source "$CACHE_FILE"
         return
     fi
+
     printf "${DIM}Fetching location...${RST}"
     GEO=""
     for api in "https://ipapi.co/json/" "https://ipinfo.io/json" "https://ifconfig.co/json"; do
@@ -27,6 +29,7 @@ fetch_geo() {
             break
         fi
     done
+
     if [ -z "$GEO" ]; then
         IP="N/A"; CITY="Unknown"; COUNTRY="Unknown"; ISP="Unknown"; ZIP=""; COUNTRY_CODE=""
     else
@@ -42,10 +45,12 @@ fetch_geo() {
         [ -z "$COUNTRY" ] && COUNTRY="Unknown"
         [ -z "$ISP" ] && ISP="Unknown"
     fi
+
     echo "IP=\"$IP\"; CITY=\"$CITY\"; COUNTRY=\"$COUNTRY\"; COUNTRY_CODE=\"$COUNTRY_CODE\"; ZIP=\"$ZIP\"; ISP=\"$ISP\"" > "$CACHE_FILE"
     printf "\r\033[K"
 }
 
+# Flag emoji
 flag() {
     case $1 in
         us) echo "🇺🇸" ;; gb) echo "🇬🇧" ;; ca) echo "🇨🇦" ;; au) echo "🇦🇺" ;;
@@ -56,21 +61,25 @@ flag() {
     esac
 }
 
+# System info
 get_sysinfo() {
     OS_INFO=$(grep PRETTY_NAME /etc/os-release | cut -d'"' -f2)
     UPTIME=$(uptime -p | sed 's/up //; s/ days/d/; s/ day/d/; s/ hours/h/; s/ hour/h/; s/ minutes/m/; s/ minute/m/')
     [ -z "$UPTIME" ] && UPTIME="N/A"
+
     if systemctl is-active --quiet zivpn; then
         STATUS="${GRN}🟢 active${RST}"
     else
         STATUS="${RED}🔴 inactive${RST}"
     fi
+
     USER_COUNT=$(jq '.auth.config | length' "$CONFIG" 2>/dev/null || echo "0")
     DATE_TIME=$(date +"%a %d %b %Y  %I:%M:%S %p %Z")
     FLAG=$(flag "$COUNTRY_CODE")
     [ -n "$FLAG" ] && LOC_STR="${FLAG}  $CITY, $COUNTRY" || LOC_STR="$CITY, $COUNTRY"
 }
 
+# 3D Header
 print_header() {
     clear
     echo -e "${WHT}${BOLD}"
@@ -85,6 +94,7 @@ print_header() {
     echo ""
 }
 
+# Info Box
 banner() {
     get_sysinfo
     print_header
@@ -100,11 +110,11 @@ banner() {
     echo -e "${WHT}│${RST}  ${GRN}⚡ Service  :${RST} $STATUS"
     echo -e "${WHT}│${RST}  ${YLW}⏱  Uptime  :${RST} $UPTIME"
     echo -e "${WHT}│${RST}  ${CYN}👥 Users    :${RST} $USER_COUNT active"
-    echo -e "${WHT}│${RST}  ${MAG}🛡️ Guard    :${RST} $(systemctl is-active onepesewa-guard &>/dev/null && echo "${GRN}active${RST}" || echo "${RED}inactive${RST}")"
     echo -e "${WHT}╰─────────────────────────────────────────────────────────────╯${RST}"
     echo ""
 }
 
+# Menu
 show_menu() {
     printf "${WHT}╭──────────────────────────────────────────────────────────────────────╮${RST}\n"
     printf "${WHT}│${RST}  ${GRN}1)${RST} Start      ${GRN}2)${RST} Stop       ${GRN}3)${RST} Restart    ${GRN}4)${RST} Status       ${GRN}5)${RST} List        ${WHT}│${RST}\n"
@@ -117,34 +127,21 @@ show_menu() {
     echo ""
 }
 
-# Generate a strong password with device ID prefix
-generate_password() {
-    local devid="$1"
-    local rand=$(openssl rand -hex 6)
-    echo "Official_${devid}_${rand}"
-}
-
+# Add User (fixed prompts)
 add_user() {
     echo -e "\n${YLW}╭────────────────── CREATE NEW USER ──────────────────╮${RST}"
-    echo -ne "${GRN}│ Validity (Days): ${RST}"; read days
-    echo -ne "${GRN}│ Quota (GB/MB)  : ${RST}"; read quota
-    echo -ne "${GRN}│ Device ID (from DevInfo app): ${RST}"; read devid
+    read -p "$(echo -e "${GRN}User Password : ${RST}")" pass
+    read -p "$(echo -e "${GRN}Validity (Days): ${RST}")" days
+    read -p "$(echo -e "${GRN}Quota (GB/MB)  : ${RST}")" quota
+    read -p "$(echo -e "${GRN}Device ID      : ${RST}")" devid
     echo -e "${YLW}╰──────────────────────────────────────────────────────╯${RST}"
 
-    if [ -z "$devid" ]; then
-        echo -e "${RED}Device ID is required for anti-sharing!${RST}"
-        read -p "Press Enter to continue..."
-        return
-    fi
-
-    # Generate password that includes device ID
-    pass=$(generate_password "$devid")
     exp=$(date -d "+$days days" +%Y-%m-%d 2>/dev/null || echo "Invalid date")
 
     if [ -f "$CONFIG" ]; then
         jq --arg p "$pass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
     fi
-    echo "$pass|$exp|$quota|$devid" >> "$DB"
+    echo "$pass|$exp|$quota|${devid:-None}" >> "$DB"
     systemctl restart zivpn 2>/dev/null
 
     get_sysinfo
@@ -152,13 +149,10 @@ add_user() {
     echo -e "\n${CYN}╭──────────────────────────────────────────────────────╮${RST}"
     echo -e "${CYN}│  ${GRN}${BOLD}🎉 NEW USER CREATED SUCCESSFULLY 🎉${RST}${CYN}                 │${RST}"
     echo -e "${CYN}├──────────────────────────────────────────────────────┤${RST}"
-    echo -e "${CYN}│${RST} ${YLW}🔑 UDP Password (copy exactly):${RST}"
-    echo -e "${CYN}│${RST}    ${WHT}${BOLD}$pass${RST}"
-    echo -e "${CYN}│${RST} ${DIM}(Paste this full string into the ZIVPN app)${RST}"
-    echo -e "${CYN}│${RST}"
-    echo -e "${CYN}│${RST} ${YLW}⏳  Expiry     :${RST} ${WHT}$exp ($days Days)${RST}"
+    echo -e "${CYN}│${RST} ${YLW}👤 Password   :${RST} ${WHT}$pass${RST}"
+    echo -e "${CYN}│${RST} ${YLW}⏳ Expiry     :${RST} ${WHT}$exp ($days Days)${RST}"
     echo -e "${CYN}│${RST} ${YLW}📊 Quota      :${RST} ${WHT}$quota${RST}"
-    echo -e "${CYN}│${RST} ${YLW}📱 Device ID  :${RST} ${WHT}$devid${RST}"
+    echo -e "${CYN}│${RST} ${YLW}📱 Device ID  :${RST} ${WHT}${devid:-None}${RST}"
     echo -e "${CYN}├──────────────────────────────────────────────────────┤${RST}"
     echo -e "${CYN}│${RST} ${MAG}🌍 Server IP  :${RST} ${WHT}$IP${RST}"
     echo -e "${CYN}│${RST} ${MAG}📍 Location   :${RST} ${WHT}$CITY, $COUNTRY${RST}"
@@ -168,15 +162,10 @@ add_user() {
     read -p "Press Enter to continue..."
 }
 
+# Trial User
 trial_user() {
-    echo -ne "${GRN}Minutes (1-60): ${RST}"; read mins
-    echo -ne "${GRN}Device ID (from DevInfo app): ${RST}"; read devid
-    if [ -z "$devid" ]; then
-        echo -e "${RED}Device ID is required!${RST}"
-        read -p "Press Enter to continue..."
-        return
-    fi
-    pass="trial_$(openssl rand -hex 2)_${devid}"
+    read -p "$(echo -e "${GRN}Minutes (1-60): ${RST}")" mins
+    pass="trial_$(openssl rand -hex 2)"
     if [ -f "$CONFIG" ]; then
         jq --arg p "$pass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
         systemctl restart zivpn 2>/dev/null
@@ -191,6 +180,7 @@ trial_user() {
     read -p "Press Enter to continue..."
 }
 
+# Goodbye
 goodbye() {
     clear
     echo -e "\n${CYN}╭──────────────────────────────────────────────────────╮${RST}"
@@ -204,11 +194,12 @@ goodbye() {
     echo -e "${WHT}Channel : ${CYN}https://t.me/OfficialOnePesewa${RST}\n"
 }
 
+# Main loop
 fetch_geo
 while true; do
     banner
     show_menu
-    echo -ne "${CYN}Choose [0-99]: ${RST}"; read opt
+    read -p "$(echo -e "${CYN}Choose [0-99]: ${RST}")" opt
     case $opt in
         1) systemctl start zivpn && echo -e "${GRN}Started.${RST}" || echo -e "${RED}Failed.${RST}"; read -p "Press Enter..." ;;
         2) systemctl stop zivpn && echo -e "${RED}Stopped.${RST}" || echo -e "${RED}Failed.${RST}"; read -p "Press Enter..." ;;
@@ -216,7 +207,7 @@ while true; do
         4) systemctl status zivpn; read -p "Press Enter..." ;;
         5) [ -f "$DB" ] && { echo -e "\n${CYN}Pass | Expiry | Quota | DeviceID${RST}"; column -t -s "|" "$DB"; } || echo -e "${RED}No users.${RST}"; read -p "Press Enter..." ;;
         6) add_user ;;
-        7) echo -ne "${GRN}Password to remove: ${RST}"; read pass
+        7) read -p "$(echo -e "${GRN}Password to remove: ${RST}")" pass
            [ -f "$CONFIG" ] && jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
            [ -f "$DB" ] && sed -i "/^$pass|/d" "$DB"
            systemctl restart zivpn 2>/dev/null
@@ -225,14 +216,10 @@ while true; do
         14) journalctl -u zivpn -f ;;
         18) echo -e "\n${YLW}Updating panel...${RST}"
              wget -qO /usr/local/bin/onepesewa https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/onepesewa
-             wget -qO /usr/local/bin/onepesewa-guard https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/onepesewa-guard
-             chmod +x /usr/local/bin/onepesewa /usr/local/bin/onepesewa-guard
-             systemctl restart onepesewa-guard
+             chmod +x /usr/local/bin/onepesewa
              echo -e "${GRN}Update complete! Restarting...${RST}"; sleep 2; exec onepesewa ;;
         20) trial_user ;;
-        99) systemctl stop zivpn 2>/dev/null; systemctl stop onepesewa-guard 2>/dev/null
-            rm -rf /etc/zivpn /usr/local/bin/zivpn /usr/local/bin/onepesewa /usr/local/bin/onepesewa-guard
-            echo -e "${RED}Uninstalled.${RST}"; exit ;;
+        99) systemctl stop zivpn 2>/dev/null; rm -rf /etc/zivpn /usr/local/bin/zivpn /usr/local/bin/onepesewa; echo -e "${RED}Uninstalled.${RST}"; exit ;;
         0) goodbye; exit ;;
         *) echo -e "${RED}Invalid.${RST}"; read -p "Press Enter..." ;;
     esac

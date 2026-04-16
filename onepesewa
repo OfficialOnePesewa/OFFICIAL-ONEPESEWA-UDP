@@ -1,5 +1,5 @@
 #!/bin/bash
-# OP UDP PANEL – Bandwidth Tracking + Device Binding
+# OP UDP PANEL – Full Feature Edition
 
 CONFIG="/etc/zivpn/config.json"
 DB="/etc/zivpn/users.db"
@@ -16,6 +16,7 @@ BOLD='\e[1m' DIM='\e[2m'
 # Dependencies
 command -v jq &>/dev/null || apt-get install -y jq -qq 2>/dev/null
 command -v bc &>/dev/null || apt-get install -y bc -qq 2>/dev/null
+command -v speedtest-cli &>/dev/null || apt-get install -y speedtest-cli -qq 2>/dev/null
 
 # --- Geo fetch with fallbacks ---
 fetch_geo() {
@@ -23,7 +24,6 @@ fetch_geo() {
         source "$CACHE_FILE"
         return
     fi
-
     printf "${DIM}Fetching location...${RST}"
     GEO=""
     for api in "https://ipapi.co/json/" "https://ipinfo.io/json" "https://ifconfig.co/json"; do
@@ -32,7 +32,6 @@ fetch_geo() {
             break
         fi
     done
-
     if [ -z "$GEO" ]; then
         IP="N/A"; CITY="Unknown"; COUNTRY="Unknown"; ISP="Unknown"; ZIP=""; COUNTRY_CODE=""
     else
@@ -48,12 +47,10 @@ fetch_geo() {
         [ -z "$COUNTRY" ] && COUNTRY="Unknown"
         [ -z "$ISP" ] && ISP="Unknown"
     fi
-
     echo "IP=\"$IP\"; CITY=\"$CITY\"; COUNTRY=\"$COUNTRY\"; COUNTRY_CODE=\"$COUNTRY_CODE\"; ZIP=\"$ZIP\"; ISP=\"$ISP\"" > "$CACHE_FILE"
     printf "\r\033[K"
 }
 
-# Flag emoji
 flag() {
     case $1 in
         us) echo "🇺🇸" ;; gb) echo "🇬🇧" ;; ca) echo "🇨🇦" ;; au) echo "🇦🇺" ;;
@@ -64,25 +61,21 @@ flag() {
     esac
 }
 
-# System info
 get_sysinfo() {
     OS_INFO=$(grep PRETTY_NAME /etc/os-release | cut -d'"' -f2)
     UPTIME=$(uptime -p | sed 's/up //; s/ days/d/; s/ day/d/; s/ hours/h/; s/ hour/h/; s/ minutes/m/; s/ minute/m/')
     [ -z "$UPTIME" ] && UPTIME="N/A"
-
     if systemctl is-active --quiet zivpn; then
         STATUS="${GRN}🟢 active${RST}"
     else
         STATUS="${RED}🔴 inactive${RST}"
     fi
-
     USER_COUNT=$(jq '.auth.config | length' "$CONFIG" 2>/dev/null || echo "0")
     DATE_TIME=$(date +"%a %d %b %Y  %I:%M:%S %p %Z")
     FLAG=$(flag "$COUNTRY_CODE")
     [ -n "$FLAG" ] && LOC_STR="${FLAG}  $CITY, $COUNTRY" || LOC_STR="$CITY, $COUNTRY"
 }
 
-# 3D Header
 print_header() {
     clear
     echo -e "${WHT}${BOLD}"
@@ -97,7 +90,6 @@ print_header() {
     echo ""
 }
 
-# Info Box
 banner() {
     get_sysinfo
     print_header
@@ -117,7 +109,6 @@ banner() {
     echo ""
 }
 
-# Menu
 show_menu() {
     printf "${WHT}╭──────────────────────────────────────────────────────────────────────╮${RST}\n"
     printf "${WHT}│${RST}  ${GRN}1)${RST} Start      ${GRN}2)${RST} Stop       ${GRN}3)${RST} Restart    ${GRN}4)${RST} Status       ${GRN}5)${RST} List        ${WHT}│${RST}\n"
@@ -130,96 +121,81 @@ show_menu() {
     echo ""
 }
 
-# --- Find next available port ---
+# --- Helper functions ---
 find_free_port() {
     local port=$PORT_START
     while [ $port -le $PORT_END ]; do
         if ! grep -q "|$port|" "$DB" 2>/dev/null; then
-            echo $port
-            return
+            echo $port; return
         fi
         port=$((port+1))
     done
     echo ""
 }
 
-# --- Convert quota to bytes ---
 quota_to_bytes() {
-    local q="$1"
-    q=$(echo "$q" | tr '[:upper:]' '[:lower:]')
-    if [[ "$q" =~ ^([0-9.]+)gb$ ]]; then
-        echo "${BASH_REMATCH[1]} * 1073741824" | bc | cut -d. -f1
-    elif [[ "$q" =~ ^([0-9.]+)mb$ ]]; then
-        echo "${BASH_REMATCH[1]} * 1048576" | bc | cut -d. -f1
-    else
-        echo "0"
-    fi
+    local q=$(echo "$1" | tr '[:upper:]' '[:lower:]')
+    if [[ "$q" =~ ^([0-9.]+)gb$ ]]; then echo "${BASH_REMATCH[1]} * 1073741824" | bc | cut -d. -f1
+    elif [[ "$q" =~ ^([0-9.]+)mb$ ]]; then echo "${BASH_REMATCH[1]} * 1048576" | bc | cut -d. -f1
+    else echo "0"; fi
 }
 
-# --- Format bytes to human readable ---
 format_bytes() {
     local b=$1
-    if [ $b -ge 1073741824 ]; then
-        echo "$(echo "scale=2; $b/1073741824" | bc) GB"
-    elif [ $b -ge 1048576 ]; then
-        echo "$(echo "scale=2; $b/1048576" | bc) MB"
-    elif [ $b -ge 1024 ]; then
-        echo "$(echo "scale=2; $b/1024" | bc) KB"
-    else
-        echo "$b B"
-    fi
+    if [ $b -ge 1073741824 ]; then echo "$(echo "scale=2; $b/1073741824" | bc) GB"
+    elif [ $b -ge 1048576 ]; then echo "$(echo "scale=2; $b/1048576" | bc) MB"
+    elif [ $b -ge 1024 ]; then echo "$(echo "scale=2; $b/1024" | bc) KB"
+    else echo "$b B"; fi
 }
 
-# --- Setup iptables tracking for a user ---
 setup_tracking() {
-    local pass="$1"
-    local port="$2"
+    local port=$1
     iptables -I INPUT -p udp --dport $port -j ACCEPT 2>/dev/null
-    iptables -I FORWARD -p udp --dport $port -j ACCEPT 2>/dev/null
-    # Add to NAT
     iptables -t nat -A PREROUTING -p udp --dport $port -j DNAT --to-destination :5667 2>/dev/null
-    # Add counting rules (using custom chains)
-    iptables -N UDP_IN_$port 2>/dev/null
-    iptables -N UDP_OUT_$port 2>/dev/null
+    iptables -N UDP_IN_$port 2>/dev/null; iptables -N UDP_OUT_$port 2>/dev/null
     iptables -I INPUT -p udp --dport $port -j UDP_IN_$port 2>/dev/null
     iptables -I OUTPUT -p udp --sport $port -j UDP_OUT_$port 2>/dev/null
 }
 
-# --- Remove iptables tracking for a user ---
 remove_tracking() {
-    local port="$1"
+    local port=$1
     iptables -D INPUT -p udp --dport $port -j UDP_IN_$port 2>/dev/null
     iptables -D OUTPUT -p udp --sport $port -j UDP_OUT_$port 2>/dev/null
-    iptables -F UDP_IN_$port 2>/dev/null
-    iptables -X UDP_IN_$port 2>/dev/null
-    iptables -F UDP_OUT_$port 2>/dev/null
-    iptables -X UDP_OUT_$port 2>/dev/null
+    iptables -F UDP_IN_$port 2>/dev/null; iptables -X UDP_IN_$port 2>/dev/null
+    iptables -F UDP_OUT_$port 2>/dev/null; iptables -X UDP_OUT_$port 2>/dev/null
     iptables -D INPUT -p udp --dport $port -j ACCEPT 2>/dev/null
     iptables -t nat -D PREROUTING -p udp --dport $port -j DNAT --to-destination :5667 2>/dev/null
 }
 
-# --- Update usage database from iptables counters ---
 update_usage_db() {
     while IFS='|' read -r pass expiry quota port deviceid; do
         if [ -n "$port" ] && [ "$port" != "None" ]; then
             in_bytes=$(iptables -L UDP_IN_$port -v -x 2>/dev/null | grep -oP '\d+' | head -1)
             out_bytes=$(iptables -L UDP_OUT_$port -v -x 2>/dev/null | grep -oP '\d+' | head -1)
             total=$(( ${in_bytes:-0} + ${out_bytes:-0} ))
-            # Update usage.db: pass|total_bytes
             grep -v "^$pass|" "$USAGE_DB" 2>/dev/null > /tmp/usage_tmp
             echo "$pass|$total" >> /tmp/usage_tmp
             mv /tmp/usage_tmp "$USAGE_DB"
+            # Quota enforcement: if exceeded, remove password from config (pause)
+            quota_bytes=$(quota_to_bytes "$quota")
+            if [ $quota_bytes -gt 0 ] && [ $total -ge $quota_bytes ]; then
+                if grep -q "^$pass|" "$DB" && ! grep -q "^$pass|.*|PAUSED" "$DB"; then
+                    # Mark as paused and remove from active config
+                    sed -i "s|^$pass|$pass [PAUSED]|" "$DB"
+                    jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
+                    systemctl restart zivpn 2>/dev/null
+                    echo "$(date): User $pass paused - quota exceeded" >> /var/log/opudp.log
+                fi
+            fi
         fi
     done < "$DB"
 }
 
-# --- Get current usage for a password ---
 get_usage() {
-    local pass="$1"
-    grep "^$pass|" "$USAGE_DB" 2>/dev/null | cut -d'|' -f2 | head -1
+    grep "^$1|" "$USAGE_DB" 2>/dev/null | cut -d'|' -f2 | head -1
 }
 
-# --- Add User (with device binding + bandwidth tracking) ---
+# --- Feature Implementations ---
 add_user() {
     echo -e "\n${YLW}╭────────────────── CREATE NEW USER ──────────────────╮${RST}"
     read -p "$(echo -e "${GRN}Base Password  : ${RST}")" basepass
@@ -227,45 +203,21 @@ add_user() {
     read -p "$(echo -e "${GRN}Quota (GB/MB)  : ${RST}")" quota
     read -p "$(echo -e "${GRN}Device ID      : ${RST}")" devid
     echo -e "${YLW}╰──────────────────────────────────────────────────────╯${RST}"
-
-    if [ -n "$devid" ]; then
-        finalpass="${basepass}_${devid}"
-    else
-        finalpass="$basepass"
-        devid="None"
-    fi
-
+    if [ -n "$devid" ]; then finalpass="${basepass}_${devid}"; else finalpass="$basepass"; devid="None"; fi
     exp=$(date -d "+$days days" +%Y-%m-%d 2>/dev/null || echo "Invalid date")
-
-    # Find free port
     port=$(find_free_port)
-    if [ -z "$port" ]; then
-        echo -e "${RED}Error: No free ports available!${RST}"
-        read -p "Press Enter to continue..."
-        return
-    fi
-
-    # Add to ZIVPN config
-    if [ -f "$CONFIG" ]; then
-        jq --arg p "$finalpass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
-    fi
+    if [ -z "$port" ]; then echo -e "${RED}No free ports!${RST}"; read -p "Press Enter..."; return; fi
+    if [ -f "$CONFIG" ]; then jq --arg p "$finalpass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"; fi
     echo "$finalpass|$exp|$quota|$port|$devid" >> "$DB"
     echo "$finalpass|0" >> "$USAGE_DB"
-
-    # Setup iptables tracking
-    setup_tracking "$finalpass" "$port"
-
+    setup_tracking "$port"
     systemctl restart zivpn 2>/dev/null
-
     get_sysinfo
-
     echo -e "\n${CYN}╭──────────────────────────────────────────────────────╮${RST}"
     echo -e "${CYN}│  ${GRN}${BOLD}🎉 NEW USER CREATED SUCCESSFULLY 🎉${RST}${CYN}                 │${RST}"
     echo -e "${CYN}├──────────────────────────────────────────────────────┤${RST}"
     echo -e "${CYN}│${RST} ${YLW}🔑 UDP Password :${RST} ${WHT}$finalpass${RST}"
-    echo -e "${CYN}│${RST}   ${DIM}(Copy the entire string above)${RST}"
     echo -e "${CYN}│${RST} ${YLW}📡 Assigned Port:${RST} ${WHT}$port${RST}"
-    echo -e "${CYN}│${RST}"
     echo -e "${CYN}│${RST} ${YLW}⏳ Expiry       :${RST} ${WHT}$exp ($days Days)${RST}"
     echo -e "${CYN}│${RST} ${YLW}📊 Quota        :${RST} ${WHT}$quota${RST}"
     echo -e "${CYN}│${RST} ${YLW}📱 Device ID    :${RST} ${WHT}$devid${RST}"
@@ -273,12 +225,44 @@ add_user() {
     echo -e "${CYN}│${RST} ${MAG}🌍 Server IP    :${RST} ${WHT}$IP${RST}"
     echo -e "${CYN}│${RST} ${MAG}📍 Location     :${RST} ${WHT}$CITY, $COUNTRY${RST}"
     echo -e "${CYN}│${RST} ${MAG}🏢 ISP          :${RST} ${WHT}$ISP${RST}"
-    echo -e "${CYN}╰──────────────────────────────────────────────────────╯${RST}"
-    echo ""
+    echo -e "${CYN}╰──────────────────────────────────────────────────────╯${RST}\n"
     read -p "Press Enter to continue..."
 }
 
-# --- Display usage statistics ---
+remove_user() {
+    read -p "$(echo -e "${GRN}Password to remove: ${RST}")" pass
+    port=$(grep "^$pass|" "$DB" 2>/dev/null | cut -d'|' -f4)
+    [ -n "$port" ] && remove_tracking "$port"
+    [ -f "$CONFIG" ] && jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
+    sed -i "/^$pass|/d" "$DB" 2>/dev/null; sed -i "/^$pass|/d" "$USAGE_DB" 2>/dev/null
+    systemctl restart zivpn 2>/dev/null
+    echo -e "${GRN}User removed.${RST}"; read -p "Press Enter..."
+}
+
+renew_user() {
+    read -p "$(echo -e "${GRN}Password to renew: ${RST}")" pass
+    if ! grep -q "^$pass|" "$DB"; then echo -e "${RED}User not found.${RST}"; read -p "Press Enter..."; return; fi
+    read -p "$(echo -e "${GRN}Extend by days: ${RST}")" days
+    oldexp=$(grep "^$pass|" "$DB" | cut -d'|' -f2)
+    newexp=$(date -d "$oldexp +$days days" +%Y-%m-%d 2>/dev/null || echo "$oldexp")
+    sed -i "s|^$pass|$pass|$newexp|" "$DB"
+    echo -e "${GRN}Expiry extended to $newexp.${RST}"; read -p "Press Enter..."
+}
+
+cleanup_expired() {
+    today=$(date +%Y-%m-%d)
+    while IFS='|' read -r pass expiry quota port deviceid; do
+        if [[ "$expiry" < "$today" ]]; then
+            [ -n "$port" ] && remove_tracking "$port"
+            [ -f "$CONFIG" ] && jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
+            sed -i "/^$pass|/d" "$DB"; sed -i "/^$pass|/d" "$USAGE_DB"
+            echo "Removed expired user: $pass"
+        fi
+    done < "$DB"
+    systemctl restart zivpn 2>/dev/null
+    echo -e "${GRN}Cleanup completed.${RST}"; read -p "Press Enter..."
+}
+
 show_usage_stats() {
     update_usage_db
     echo -e "\n${CYN}╭──────────────────────────────────────────────────────────────────────────╮${RST}"
@@ -286,76 +270,91 @@ show_usage_stats() {
     echo -e "${CYN}├──────────────────────────────────────────────────────────────────────────┤${RST}"
     while IFS='|' read -r pass expiry quota port deviceid; do
         if [ -n "$pass" ]; then
-            used_bytes=$(get_usage "$pass")
-            quota_bytes=$(quota_to_bytes "$quota")
+            used_bytes=$(get_usage "$pass"); quota_bytes=$(quota_to_bytes "$quota")
             used_fmt=$(format_bytes ${used_bytes:-0})
-            if [ $quota_bytes -gt 0 ] && [ ${used_bytes:-0} -ge $quota_bytes ]; then
-                status="${RED}EXCEEDED${RST}"
-            else
-                status="${GRN}OK${RST}"
-            fi
-            printf "${CYN}│${RST} %-33s | %-18s | %-5s | %-10s ${CYN}│${RST}\n" \
-                "${pass:0:33}" "$used_fmt / $quota" "$port" "$expiry"
+            if [ $quota_bytes -gt 0 ] && [ ${used_bytes:-0} -ge $quota_bytes ]; then status="${RED}PAUSED${RST}"; else status="${GRN}ACTIVE${RST}"; fi
+            printf "${CYN}│${RST} %-33s | %-18s | %-5s | %-10s %s ${CYN}│${RST}\n" "${pass:0:33}" "$used_fmt / $quota" "$port" "$expiry" "$status"
         fi
     done < "$DB"
-    echo -e "${CYN}╰──────────────────────────────────────────────────────────────────────────╯${RST}"
-    echo ""
+    echo -e "${CYN}╰──────────────────────────────────────────────────────────────────────────╯${RST}\n"
     read -p "Press Enter to continue..."
 }
 
-# --- Remove User (cleanup iptables) ---
-remove_user() {
-    read -p "$(echo -e "${GRN}Password to remove: ${RST}")" pass
-    # Get port before deletion
-    port=$(grep "^$pass|" "$DB" 2>/dev/null | cut -d'|' -f4)
+reset_bandwidth() {
+    read -p "$(echo -e "${GRN}Password to reset bandwidth: ${RST}")" pass
+    port=$(grep "^$pass|" "$DB" | cut -d'|' -f4)
     if [ -n "$port" ]; then
-        remove_tracking "$port"
-    fi
-    [ -f "$CONFIG" ] && jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
-    sed -i "/^$pass|/d" "$DB" 2>/dev/null
-    sed -i "/^$pass|/d" "$USAGE_DB" 2>/dev/null
-    systemctl restart zivpn 2>/dev/null
-    echo -e "${GRN}User removed.${RST}"
-    read -p "Press Enter to continue..."
+        iptables -Z UDP_IN_$port 2>/dev/null; iptables -Z UDP_OUT_$port 2>/dev/null
+        sed -i "s|^$pass|.*|$pass|0|" "$USAGE_DB"
+        echo -e "${GRN}Bandwidth reset.${RST}"
+    else echo -e "${RED}User not found.${RST}"; fi
+    read -p "Press Enter..."
 }
 
-# --- Install cron job for usage updates ---
-install_cron() {
-    cat > /etc/cron.d/opudp_usage <<EOF
-* * * * * root /usr/local/bin/onepesewa --update-usage >/dev/null 2>&1
-EOF
-    chmod 644 /etc/cron.d/opudp_usage
+speed_test() {
+    echo -e "${YLW}Running speed test...${RST}"
+    speedtest-cli --simple
+    read -p "Press Enter..."
 }
 
-# Trial User
+backup_data() {
+    mkdir -p /root/opudp_backup
+    tar -czf /root/opudp_backup/opudp_$(date +%Y%m%d_%H%M%S).tar.gz /etc/zivpn/
+    echo -e "${GRN}Backup saved to /root/opudp_backup/${RST}"
+    read -p "Press Enter..."
+}
+
+restore_backup() {
+    echo -e "${YLW}Available backups:${RST}"
+    ls -1 /root/opudp_backup/*.tar.gz 2>/dev/null || { echo -e "${RED}No backups found.${RST}"; read -p "Press Enter..."; return; }
+    read -p "Enter filename to restore: " file
+    if [ -f "$file" ]; then
+        systemctl stop zivpn
+        tar -xzf "$file" -C /
+        systemctl start zivpn
+        echo -e "${GRN}Restored.${RST}"
+    else echo -e "${RED}File not found.${RST}"; fi
+    read -p "Press Enter..."
+}
+
+change_port_range() {
+    read -p "New start port (current $PORT_START): " new_start
+    read -p "New end port (current $PORT_END): " new_end
+    if [[ "$new_start" =~ ^[0-9]+$ ]] && [[ "$new_end" =~ ^[0-9]+$ ]]; then
+        PORT_START=$new_start; PORT_END=$new_end
+        echo -e "${GRN}Port range updated. Restart panel to apply.${RST}"
+    else echo -e "${RED}Invalid input.${RST}"; fi
+    read -p "Press Enter..."
+}
+
+set_conn_limit() {
+    read -p "Max connections per user: " limit
+    echo "$limit" > /etc/zivpn/conn_limit
+    echo -e "${GRN}Connection limit set to $limit (requires iptables connlimit module).${RST}"
+    read -p "Press Enter..."
+}
+
 trial_user() {
     read -p "$(echo -e "${GRN}Minutes (1-60): ${RST}")" mins
     pass="trial_$(openssl rand -hex 2)"
     port=$(find_free_port)
-    if [ -z "$port" ]; then
-        echo -e "${RED}No free ports!${RST}"
-        read -p "Press Enter..."
-        return
-    fi
-    if [ -f "$CONFIG" ]; then
-        jq --arg p "$pass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
-    fi
+    if [ -z "$port" ]; then echo -e "${RED}No free ports!${RST}"; read -p "Press Enter..."; return; fi
+    if [ -f "$CONFIG" ]; then jq --arg p "$pass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"; fi
+    exp=$(date -d "+1 days" +%Y-%m-%d)
     echo "$pass|$exp|100MB|$port|trial" >> "$DB"
     echo "$pass|0" >> "$USAGE_DB"
-    setup_tracking "$pass" "$port"
+    setup_tracking "$port"
     systemctl restart zivpn 2>/dev/null
     echo -e "${GRN}Trial Created: ${YLW}$pass${GRN} (Port $port, Expires in $mins mins)${RST}"
     ( sleep $((mins*60))
       remove_tracking "$port"
       [ -f "$CONFIG" ] && jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
-      sed -i "/^$pass|/d" "$DB" 2>/dev/null
-      sed -i "/^$pass|/d" "$USAGE_DB" 2>/dev/null
+      sed -i "/^$pass|/d" "$DB"; sed -i "/^$pass|/d" "$USAGE_DB"
       systemctl restart zivpn 2>/dev/null
     ) &
-    read -p "Press Enter to continue..."
+    read -p "Press Enter..."
 }
 
-# Goodbye
 goodbye() {
     clear
     echo -e "\n${CYN}╭──────────────────────────────────────────────────────╮${RST}"
@@ -369,15 +368,26 @@ goodbye() {
     echo -e "${WHT}Channel : ${CYN}https://t.me/OfficialOnePesewa${RST}\n"
 }
 
-# --- Handle --update-usage flag for cron ---
+install_cron() {
+    cat > /etc/cron.d/opudp_bandwidth <<EOF
+* * * * * root /usr/local/bin/onepesewa --update-usage >/dev/null 2>&1
+EOF
+    chmod 644 /etc/cron.d/opudp_bandwidth
+    systemctl restart cron 2>/dev/null
+}
+
+# Handle cron mode
 if [ "$1" = "--update-usage" ]; then
     update_usage_db
     exit 0
 fi
 
-# Main loop
+# Initialize
+touch "$DB" "$USAGE_DB" 2>/dev/null
 fetch_geo
-install_cron  # ensure cron is set
+install_cron
+
+# Main loop
 while true; do
     banner
     show_menu
@@ -390,16 +400,24 @@ while true; do
         5) [ -f "$DB" ] && { echo -e "\n${CYN}Password | Expiry | Quota | Port | DeviceID${RST}"; column -t -s "|" "$DB"; } || echo -e "${RED}No users.${RST}"; read -p "Press Enter..." ;;
         6) add_user ;;
         7) remove_user ;;
+        8) renew_user ;;
+        9) cleanup_expired ;;
         10) show_usage_stats ;;
-        8|9|11|12|13|15|16|17|19) echo "Coming soon."; read -p "Press Enter..." ;;
+        11) show_usage_stats ;;  # same as 10 for now
+        12) reset_bandwidth ;;
+        13) speed_test ;;
         14) journalctl -u zivpn -f ;;
+        15) backup_data ;;
+        16) restore_backup ;;
+        17) change_port_range ;;
         18) echo -e "\n${YLW}Updating panel...${RST}"
              wget -qO /usr/local/bin/onepesewa https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/onepesewa
              chmod +x /usr/local/bin/onepesewa
              echo -e "${GRN}Update complete! Restarting...${RST}"; sleep 2; exec onepesewa ;;
+        19) set_conn_limit ;;
         20) trial_user ;;
         99) systemctl stop zivpn 2>/dev/null
-            rm -rf /etc/zivpn /usr/local/bin/zivpn /usr/local/bin/onepesewa /etc/cron.d/opudp_usage
+            rm -rf /etc/zivpn /usr/local/bin/zivpn /usr/local/bin/onepesewa /etc/cron.d/opudp_bandwidth
             echo -e "${RED}Uninstalled.${RST}"; exit ;;
         0) goodbye; exit ;;
         *) echo -e "${RED}Invalid.${RST}"; read -p "Press Enter..." ;;

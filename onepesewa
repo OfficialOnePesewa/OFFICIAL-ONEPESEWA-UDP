@@ -1,14 +1,16 @@
 #!/bin/bash
-# OP UDP PANEL – 10-Second Quota Enforcement
+# OP UDP PANEL – Telegram Bot Integration + 10-Second Quota Enforcement
 
 CONFIG="/etc/zivpn/config.json"
 DB="/etc/zivpn/users.db"
 USAGE_DB="/etc/zivpn/usage.db"
+TELEGRAM_DB="/etc/zivpn/telegram.db"
 CACHE_FILE="/tmp/opudp_geo.cache"
 CACHE_TTL=300
 PORT_START=6001
 PORT_END=19999
 DAEMON_PID_FILE="/var/run/opudp_daemon.pid"
+LAST_SENT_DB="/etc/zivpn/last_sent.db"
 
 # Colors
 RED='\e[1;31m' GRN='\e[1;32m' YLW='\e[1;33m' BLU='\e[1;34m' MAG='\e[1;35m' CYN='\e[1;36m' WHT='\e[1;37m' RST='\e[0m'
@@ -116,7 +118,7 @@ show_menu() {
     printf "${WHT}│${RST}  ${GRN}6)${RST} Add User   ${GRN}7)${RST} Remove     ${GRN}8)${RST} Renew      ${GRN}9)${RST} Cleanup      ${GRN}10)${RST} Usage Stats ${WHT}│${RST}\n"
     printf "${WHT}│${RST}  ${GRN}11)${RST} BW+Expiry ${GRN}12)${RST} Reset BW   ${GRN}13)${RST} Speed Test ${GRN}14)${RST} Live Logs    ${GRN}15)${RST} Backup      ${WHT}│${RST}\n"
     printf "${WHT}│${RST}  ${GRN}16)${RST} Restore   ${GRN}17)${RST} Port Range ${GRN}18)${RST} ${YLW}Update${RST}     ${GRN}19)${RST} Conn Limit   ${GRN}20)${RST} Trial User  ${WHT}│${RST}\n"
-    printf "${WHT}│${RST}  ${GRN}21)${RST} User Info                                                       ${WHT}│${RST}\n"
+    printf "${WHT}│${RST}  ${GRN}21)${RST} User Info ${GRN}22)${RST} Telegram Setup                    ${GRN}23)${RST} Register TG ${WHT}│${RST}\n"
     printf "${WHT}├──────────────────────────────────────────────────────────────────────┤${RST}\n"
     printf "${WHT}│${RST}  ${RED}99) UNINSTALL${RST}                                                ${GRN}0) Exit${RST}  ${WHT}│${RST}\n"
     printf "${WHT}╰──────────────────────────────────────────────────────────────────────╯${RST}\n"
@@ -169,24 +171,144 @@ remove_tracking() {
     iptables -t nat -D PREROUTING -p udp --dport $port -j DNAT --to-destination :5667 2>/dev/null
 }
 
+# --- Telegram functions ---
+send_telegram_message() {
+    local chat_id="$1"
+    local message="$2"
+    local token=$(cat /etc/zivpn/telegram_token 2>/dev/null)
+    if [ -z "$token" ]; then return; fi
+    curl -s -X POST "https://api.telegram.org/bot$token/sendMessage" \
+        -d "chat_id=$chat_id" \
+        -d "text=$message" \
+        -d "parse_mode=HTML" >/dev/null
+}
+
+telegram_setup() {
+    echo -e "\n${YLW}╭────────────────── TELEGRAM BOT SETUP ──────────────────╮${RST}"
+    echo -e "${WHT}1. Create a bot with @BotFather on Telegram and get the token.${RST}"
+    echo -e "${WHT}2. Paste the token below.${RST}"
+    read -p "$(echo -e "${GRN}Bot Token: ${RST}")" token
+    echo "$token" > /etc/zivpn/telegram_token
+    chmod 600 /etc/zivpn/telegram_token
+    echo -e "${GRN}Token saved!${RST}"
+    echo -e "${WHT}Now users can register by sending /start <password> to your bot.${RST}"
+    echo -e "${WHT}Admin can manually register a user with option 23.${RST}"
+    read -p "Press Enter to continue..."
+}
+
+register_telegram_user() {
+    read -p "$(echo -e "${GRN}User Password: ${RST}")" pass
+    if ! grep -q "^$pass|" "$DB"; then
+        echo -e "${RED}User not found.${RST}"; read -p "Press Enter..."; return
+    fi
+    read -p "$(echo -e "${GRN}Telegram Chat ID: ${RST}")" chat_id
+    # Remove existing entry for this password
+    grep -v "^$pass|" "$TELEGRAM_DB" 2>/dev/null > /tmp/tg_tmp
+    echo "$pass|$chat_id" >> /tmp/tg_tmp
+    mv /tmp/tg_tmp "$TELEGRAM_DB"
+    echo -e "${GRN}Telegram linked!${RST}"
+    read -p "Press Enter to continue..."
+}
+
+# --- Bot listener (simple polling for user registration) ---
+start_telegram_listener() {
+    local token=$(cat /etc/zivpn/telegram_token 2>/dev/null)
+    if [ -z "$token" ]; then return; fi
+    (
+        local offset=0
+        while true; do
+            updates=$(curl -s "https://api.telegram.org/bot$token/getUpdates?offset=$offset&timeout=30")
+            if echo "$updates" | grep -q '"ok":true'; then
+                # Process each update
+                echo "$updates" | jq -c '.result[]' 2>/dev/null | while read update; do
+                    update_id=$(echo "$update" | jq -r '.update_id')
+                    offset=$((update_id + 1))
+                    message=$(echo "$update" | jq -r '.message')
+                    if [ "$message" != "null" ]; then
+                        text=$(echo "$message" | jq -r '.text')
+                        chat_id=$(echo "$message" | jq -r '.chat.id')
+                        if [[ "$text" =~ ^/start[[:space:]]+(.+)$ ]]; then
+                            pass="${BASH_REMATCH[1]}"
+                            if grep -q "^$pass|" "$DB"; then
+                                grep -v "^$pass|" "$TELEGRAM_DB" 2>/dev/null > /tmp/tg_tmp
+                                echo "$pass|$chat_id" >> /tmp/tg_tmp
+                                mv /tmp/tg_tmp "$TELEGRAM_DB"
+                                send_telegram_message "$chat_id" "✅ Your VPN account has been linked! You will receive usage updates here."
+                            else
+                                send_telegram_message "$chat_id" "❌ Invalid password. Please check and try again."
+                            fi
+                        fi
+                    fi
+                done
+            fi
+            sleep 2
+        done
+    ) &
+    echo $! > /var/run/opudp_tg_listener.pid
+}
+
+# --- Daemon: update usage and send Telegram notifications on first activity ---
 update_usage_db() {
     while IFS='|' read -r pass expiry quota port deviceid startdate; do
         if [ -n "$port" ] && [ "$port" != "None" ]; then
             in_bytes=$(iptables -L UDP_IN_$port -v -x 2>/dev/null | grep -oP '\d+' | head -1)
             out_bytes=$(iptables -L UDP_OUT_$port -v -x 2>/dev/null | grep -oP '\d+' | head -1)
             total=$(( ${in_bytes:-0} + ${out_bytes:-0} ))
+            
+            # Get previous usage
+            prev=$(grep "^$pass|" "$USAGE_DB" 2>/dev/null | cut -d'|' -f2)
+            prev=${prev:-0}
+            
+            # Update usage DB
             grep -v "^$pass|" "$USAGE_DB" 2>/dev/null > /tmp/usage_tmp
             echo "$pass|$total" >> /tmp/usage_tmp
             mv /tmp/usage_tmp "$USAGE_DB"
-            # Quota enforcement: if exceeded, remove password from config (pause)
+            
+            # Check if this is a new session (traffic increased from zero, or after a gap)
+            last_sent=$(grep "^$pass|" "$LAST_SENT_DB" 2>/dev/null | cut -d'|' -f2)
+            current_time=$(date +%s)
+            # Send notification if traffic increased by >1KB and last sent >1 hour ago
+            if [ $total -gt $prev ] && [ $((total - prev)) -gt 1024 ]; then
+                if [ -z "$last_sent" ] || [ $((current_time - last_sent)) -gt 3600 ]; then
+                    # Get Telegram chat ID
+                    chat_id=$(grep "^$pass|" "$TELEGRAM_DB" 2>/dev/null | cut -d'|' -f2)
+                    if [ -n "$chat_id" ]; then
+                        # Build message
+                        used_fmt=$(format_bytes $total)
+                        quota_bytes=$(quota_to_bytes "$quota")
+                        remaining=$((quota_bytes - total))
+                        [ $remaining -lt 0 ] && remaining=0
+                        remaining_fmt=$(format_bytes $remaining)
+                        days_left=$(( ($(date -d "$expiry" +%s) - $(date +%s)) / 86400 ))
+                        message="🔔 <b>VPN Session Started</b>%0A%0A"
+                        message+="👤 <b>User:</b> ${pass:0:15}...%0A"
+                        message+="📅 <b>Expiry:</b> $expiry ($days_left days)%0A"
+                        message+="📊 <b>Quota:</b> $quota%0A"
+                        message+="📈 <b>Used:</b> $used_fmt%0A"
+                        message+="📉 <b>Remaining:</b> $remaining_fmt%0A"
+                        message+="🌐 <b>Server:</b> $IP%0A"
+                        message+="📍 <b>Location:</b> $CITY, $COUNTRY"
+                        send_telegram_message "$chat_id" "$message"
+                        grep -v "^$pass|" "$LAST_SENT_DB" 2>/dev/null > /tmp/last_tmp
+                        echo "$pass|$current_time" >> /tmp/last_tmp
+                        mv /tmp/last_tmp "$LAST_SENT_DB"
+                    fi
+                fi
+            fi
+            
+            # Quota enforcement
             quota_bytes=$(quota_to_bytes "$quota")
             if [ $quota_bytes -gt 0 ] && [ $total -ge $quota_bytes ]; then
                 if grep -q "^$pass|" "$DB" && ! grep -q "^$pass|.*|PAUSED" "$DB"; then
-                    # Mark as paused and remove from active config
                     sed -i "s|^$pass|$pass [PAUSED]|" "$DB"
                     jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
                     systemctl restart zivpn 2>/dev/null
                     echo "$(date): User $pass paused - quota exceeded" >> /var/log/opudp.log
+                    # Notify user via Telegram
+                    chat_id=$(grep "^$pass|" "$TELEGRAM_DB" 2>/dev/null | cut -d'|' -f2)
+                    if [ -n "$chat_id" ]; then
+                        send_telegram_message "$chat_id" "⛔ Your VPN quota has been exhausted. Service paused. Please contact admin to renew."
+                    fi
                 fi
             fi
         fi
@@ -197,16 +319,14 @@ get_usage() {
     grep "^$1|" "$USAGE_DB" 2>/dev/null | cut -d'|' -f2 | head -1
 }
 
-# --- 10-Second Daemon (replaces cron) ---
+# --- 10-Second Daemon ---
 start_usage_daemon() {
-    # Kill any existing daemon
+    # Kill existing daemon
     if [ -f "$DAEMON_PID_FILE" ]; then
         old_pid=$(cat "$DAEMON_PID_FILE")
         kill $old_pid 2>/dev/null
         rm -f "$DAEMON_PID_FILE"
     fi
-
-    # Start new daemon in background
     (
         while true; do
             /usr/local/bin/onepesewa --update-usage
@@ -224,6 +344,10 @@ stop_usage_daemon() {
         kill $pid 2>/dev/null
         rm -f "$DAEMON_PID_FILE"
         echo -e "${YLW}Usage daemon stopped.${RST}"
+    fi
+    if [ -f /var/run/opudp_tg_listener.pid ]; then
+        kill $(cat /var/run/opudp_tg_listener.pid) 2>/dev/null
+        rm -f /var/run/opudp_tg_listener.pid
     fi
 }
 
@@ -268,6 +392,7 @@ remove_user() {
     [ -n "$port" ] && remove_tracking "$port"
     [ -f "$CONFIG" ] && jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
     sed -i "/^$pass|/d" "$DB" 2>/dev/null; sed -i "/^$pass|/d" "$USAGE_DB" 2>/dev/null
+    sed -i "/^$pass|/d" "$TELEGRAM_DB" 2>/dev/null; sed -i "/^$pass|/d" "$LAST_SENT_DB" 2>/dev/null
     systemctl restart zivpn 2>/dev/null
     echo -e "${GRN}User removed.${RST}"; read -p "Press Enter..."
 }
@@ -442,16 +567,17 @@ goodbye() {
     echo -e "${WHT}Channel : ${CYN}https://t.me/OfficialOnePesewa${RST}\n"
 }
 
-# Handle daemon/cron mode
+# Handle daemon mode
 if [ "$1" = "--update-usage" ]; then
     update_usage_db
     exit 0
 fi
 
 # Initialize
-touch "$DB" "$USAGE_DB" 2>/dev/null
+touch "$DB" "$USAGE_DB" "$TELEGRAM_DB" "$LAST_SENT_DB" 2>/dev/null
 fetch_geo
-start_usage_daemon  # Start 10-second daemon
+start_usage_daemon
+start_telegram_listener
 
 # Main loop
 while true; do
@@ -483,6 +609,8 @@ while true; do
         19) set_conn_limit ;;
         20) trial_user ;;
         21) user_info ;;
+        22) telegram_setup ;;
+        23) register_telegram_user ;;
         99) systemctl stop zivpn 2>/dev/null
             stop_usage_daemon
             rm -rf /etc/zivpn /usr/local/bin/zivpn /usr/local/bin/onepesewa

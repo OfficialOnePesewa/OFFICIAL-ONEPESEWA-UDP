@@ -1,5 +1,5 @@
 #!/bin/bash
-# OP UDP PANEL – Full Feature Edition
+# OP UDP PANEL – Full Feature Edition with Cron Guarantee
 
 CONFIG="/etc/zivpn/config.json"
 DB="/etc/zivpn/users.db"
@@ -195,6 +195,14 @@ get_usage() {
     grep "^$1|" "$USAGE_DB" 2>/dev/null | cut -d'|' -f2 | head -1
 }
 
+install_cron() {
+    if [ ! -f /etc/cron.d/opudp_bandwidth ]; then
+        echo '* * * * * root /usr/local/bin/onepesewa --update-usage >/dev/null 2>&1' > /etc/cron.d/opudp_bandwidth
+        chmod 644 /etc/cron.d/opudp_bandwidth
+        systemctl restart cron 2>/dev/null
+    fi
+}
+
 # --- Feature Implementations ---
 add_user() {
     echo -e "\n${YLW}╭────────────────── CREATE NEW USER ──────────────────╮${RST}"
@@ -368,14 +376,6 @@ goodbye() {
     echo -e "${WHT}Channel : ${CYN}https://t.me/OfficialOnePesewa${RST}\n"
 }
 
-install_cron() {
-    cat > /etc/cron.d/opudp_bandwidth <<EOF
-* * * * * root /usr/local/bin/onepesewa --update-usage >/dev/null 2>&1
-EOF
-    chmod 644 /etc/cron.d/opudp_bandwidth
-    systemctl restart cron 2>/dev/null
-}
-
 # Handle cron mode
 if [ "$1" = "--update-usage" ]; then
     update_usage_db
@@ -385,10 +385,10 @@ fi
 # Initialize
 touch "$DB" "$USAGE_DB" 2>/dev/null
 fetch_geo
-install_cron
 
 # Main loop
 while true; do
+    install_cron  # ensure cron is present on every loop start
     banner
     show_menu
     read -p "$(echo -e "${CYN}Choose [0-99]: ${RST}")" opt
@@ -403,7 +403,7 @@ while true; do
         8) renew_user ;;
         9) cleanup_expired ;;
         10) show_usage_stats ;;
-        11) show_usage_stats ;;  # same as 10 for now
+        11) show_usage_stats ;;
         12) reset_bandwidth ;;
         13) speed_test ;;
         14) journalctl -u zivpn -f ;;

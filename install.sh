@@ -1,5 +1,5 @@
 #!/bin/bash
-# OFFICIAL ONEPESEWA DUAL PROTOCOL INSTALLER – Self‑Contained
+# OFFICIAL ONEPESEWA DUAL PROTOCOL INSTALLER – With VPS Optimizer + BadVPN UDPGW
 set -e
 
 G='\e[1;32m' R='\e[1;31m' Y='\e[1;33m' C='\e[1;36m' NC='\e[0m'
@@ -9,7 +9,7 @@ ADMIN_HANDLE="@OfficialOnePesewa"
 
 echo -e "${Y}[+] Updating system & installing dependencies...${NC}"
 apt-get update -qq
-apt-get install -y -qq curl wget jq iptables-persistent netfilter-persistent openssl vnstat bc python3 python3-pip git unzip
+apt-get install -y -qq curl wget jq iptables-persistent netfilter-persistent openssl vnstat bc python3 python3-pip git unzip cmake make gcc screen
 
 OS=$(grep PRETTY_NAME /etc/os-release | cut -d'"' -f2)
 echo -e "${G}[+] OS: $OS${NC}"
@@ -47,9 +47,16 @@ echo "---------------------------------------------------"
 
 systemctl stop zivpn 2>/dev/null || true
 systemctl stop udp-custom 2>/dev/null || true
+systemctl stop badvpn-gateway 2>/dev/null || true
+
+# ------------------ VPS Optimizer ------------------
+echo -e "${Y}[1/7] Applying VPS network optimizations...${NC}"
+wget -qO /usr/local/bin/optimize.sh https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/optimize.sh
+chmod +x /usr/local/bin/optimize.sh
+bash /usr/local/bin/optimize.sh
 
 # ------------------ Install ZIVPN ------------------
-echo -e "${Y}[1/6] Installing ZIVPN...${NC}"
+echo -e "${Y}[2/7] Installing ZIVPN...${NC}"
 ARCH=$(uname -m)
 case $ARCH in
     x86_64|amd64) BIN="amd64" ;;
@@ -95,8 +102,8 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
-# ------------------ Install UDP Custom (from this repo) ------------------
-echo -e "${Y}[2/6] Installing UDP Custom...${NC}"
+# ------------------ Install UDP Custom ------------------
+echo -e "${Y}[3/7] Installing UDP Custom...${NC}"
 mkdir -p /root/udp
 cd /root
 
@@ -148,8 +155,40 @@ EOF
 
 echo "$UDPC_PORT" > /root/udp/udp_port.txt
 
+# ------------------ Install BadVPN UDPGW ------------------
+echo -e "${Y}[4/7] Installing BadVPN UDPGW (VoIP/Gaming support)...${NC}"
+cd /root
+rm -rf badvpn-build
+
+# Clone and compile only udpgw
+git clone https://github.com/ambrop72/badvpn.git badvpn-build
+cd badvpn-build
+mkdir -p build
+cd build
+cmake .. -DBUILD_NOTHING_BY_DEFAULT=1 -DBUILD_UDPGW=1
+make
+cp udpgw/badvpn-udpgw /usr/local/bin/
+cd /root
+rm -rf badvpn-build
+
+# Create systemd service
+cat <<EOF > /etc/systemd/system/badvpn-gateway.service
+[Unit]
+Description=BadVPN UDP Gateway for VoIP/Gaming
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/badvpn-udpgw --loglevel warning --listen-addr 127.0.0.1:7300
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 # ------------------ Firewall ------------------
-echo -e "${Y}[3/6] Configuring firewall...${NC}"
+echo -e "${Y}[5/7] Configuring firewall...${NC}"
 iptables -I INPUT -p udp --dport 5667 -j ACCEPT 2>/dev/null || true
 iptables -I INPUT -p udp --dport 6000:19999 -j ACCEPT 2>/dev/null || true
 iptables -t nat -A PREROUTING -p udp --dport 6000:19999 -j DNAT --to-destination :5667 2>/dev/null || true
@@ -158,16 +197,19 @@ iptables -I INPUT -p udp --dport $UDPC_PORT -j ACCEPT 2>/dev/null || true
 iptables -I INPUT -p udp --dport 7800 -j ACCEPT 2>/dev/null || true
 iptables -I INPUT -p tcp --dport 7800 -j ACCEPT 2>/dev/null || true
 
+# UDPGW port (7300) – local only, no external exposure needed
+iptables -I INPUT -p udp --dport 7300 -s 127.0.0.1 -j ACCEPT 2>/dev/null || true
+
 netfilter-persistent save 2>/dev/null || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
 
-# ------------------ Panel ------------------
-echo -e "${Y}[4/6] Installing OP UDP Panel...${NC}"
+# ------------------ Install Panel ------------------
+echo -e "${Y}[6/7] Installing OP UDP Panel...${NC}"
 wget -qO /usr/local/bin/onepesewa https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/onepesewa
 chmod +x /usr/local/bin/onepesewa
 ln -sf /usr/local/bin/onepesewa /usr/local/bin/udp
 
 # ------------------ Telegram Bot (Optional) ------------------
-echo -e "${Y}[5/6] Setting up Telegram bot...${NC}"
+echo -e "${Y}[7/7] Setting up Telegram bot...${NC}"
 set +e
 pip3 install --quiet python-telegram-bot==20.3 2>/dev/null || \
 pip3 install --break-system-packages --quiet python-telegram-bot==20.3 2>/dev/null || true
@@ -195,12 +237,12 @@ if python3 -c "import telegram" 2>/dev/null; then
     systemctl start opudp-bot 2>/dev/null || true
 fi
 
-# ------------------ Start Services ------------------
-echo -e "${Y}[6/6] Starting services...${NC}"
+# ------------------ Start All Services ------------------
 systemctl daemon-reload
-systemctl enable zivpn udp-custom
+systemctl enable zivpn udp-custom badvpn-gateway
 systemctl start zivpn
 systemctl start udp-custom
+systemctl start badvpn-gateway
 
 sleep 5
 
@@ -212,6 +254,7 @@ echo -e "${G} Location    :${NC} $CITY, $COUNTRY"
 echo -e "${G} ISP         :${NC} $ISP"
 echo -e "${G} ZIVPN Port  :${NC} 5667 (NAT 6000-19999)"
 echo -e "${G} UDP Custom  :${NC} $UDPC_PORT (Gateway 7800)"
+echo -e "${G} BadVPN UDPGW:${NC} 127.0.0.1:7300"
 echo -e "${C}====================================================${NC}"
 
 if systemctl is-active --quiet zivpn; then
@@ -224,6 +267,12 @@ if systemctl is-active --quiet udp-custom; then
     echo -e "${G}✅ UDP Custom is running${NC}"
 else
     echo -e "${R}❌ UDP Custom failed to start.${NC}"
+fi
+
+if systemctl is-active --quiet badvpn-gateway; then
+    echo -e "${G}✅ BadVPN UDPGW is running (VoIP/Gaming ready)${NC}"
+else
+    echo -e "${R}❌ BadVPN failed to start.${NC}"
 fi
 
 echo -e "${C}====================================================${NC}"

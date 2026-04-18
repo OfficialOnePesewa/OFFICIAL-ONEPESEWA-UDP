@@ -1,26 +1,20 @@
 #!/bin/bash
-# OFFICIAL ONEPESEWA DUAL PROTOCOL INSTALLER – Final Working Version
-# Supports ZIVPN (port 5667) + UDP Custom (port 55000) – No Conflicts
+# OFFICIAL ONEPESEWA DUAL PROTOCOL INSTALLER – Stable & Working
+# ZIVPN (port 5667) + UDP Custom (port 55000) – No Conflicts
 # One-liner: bash <(curl -fsSL https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/install.sh)
 
 set -e
 
-# Colors
 G='\e[1;32m' R='\e[1;31m' Y='\e[1;33m' C='\e[1;36m' NC='\e[0m'
-
-# Root check
 [ "$EUID" -ne 0 ] && echo -e "${R}Run as root.${NC}" && exit 1
 
-# Update system and install dependencies
-echo -e "${Y}[+] Updating system and installing dependencies...${NC}"
+echo -e "${Y}[+] Updating system & installing dependencies...${NC}"
 apt-get update -qq
 apt-get install -y -qq curl wget jq iptables-persistent netfilter-persistent openssl vnstat bc python3 python3-pip git unzip
 
-# OS info
 OS=$(grep PRETTY_NAME /etc/os-release | cut -d'"' -f2)
 echo -e "${G}[+] OS: $OS${NC}"
 
-# Geo IP
 GEO=$(curl -4 -s --max-time 8 https://ipapi.co/json/ 2>/dev/null)
 if [ -z "$GEO" ] || ! echo "$GEO" | grep -q '"ip"'; then
     IP="N/A"; CITY="Unknown"; COUNTRY="Unknown"; ISP="Unknown"
@@ -52,7 +46,6 @@ echo "  ISP      : $ISP"
 echo "  Admin    : @OfficialOnePesewa"
 echo "---------------------------------------------------"
 
-# Stop any previous services
 systemctl stop zivpn 2>/dev/null || true
 systemctl stop udp-custom 2>/dev/null || true
 
@@ -103,30 +96,15 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
-# ------------------ Install UDP Custom (Port 55000) ------------------
+# ------------------ Install UDP Custom (Stable Binary, Port 55000) ------------------
 echo -e "${Y}[2/7] Installing UDP Custom on port 55000...${NC}"
 mkdir -p /root/udp
 cd /root
 
-# Download precompiled binary
-if [ ! -f /root/udp/udp-custom ]; then
-    wget -qO /root/udp/udp-custom https://github.com/http-custom/udp-custom/releases/download/latest/udp-custom-linux-amd64
-    chmod +x /root/udp/udp-custom
-fi
+# Use the stable eooce fork
+wget -qO /root/udp/udp-custom https://github.com/eooce/udp-custom/releases/download/latest/udp-custom-linux-amd64
+chmod +x /root/udp/udp-custom
 
-# Fallback build from source if binary fails
-if [ ! -f /root/udp/udp-custom ] || ! /root/udp/udp-custom --version &>/dev/null; then
-    echo -e "${Y}[*] Building UDP Custom from source...${NC}"
-    rm -rf udp-custom-2
-    git clone https://github.com/http-custom/udp-custom udp-custom-2
-    cd udp-custom-2
-    chmod +x install.sh
-    ./install.sh || true
-    cp udp-custom /root/udp/ 2>/dev/null || true
-    cd /root
-fi
-
-# Config with port 55000 to avoid ZIVPN conflict
 cat <<EOF > /root/udp/config.json
 {
   "listen": ":55000",
@@ -136,17 +114,14 @@ cat <<EOF > /root/udp/config.json
 }
 EOF
 
-# SSL cert
 if [ ! -f /root/udp/server.crt ]; then
     openssl req -new -newkey rsa:4096 -days 365 -nodes -x509 \
         -subj "/C=GH/ST=Accra/L=Accra/O=OnePesewa/CN=udp-custom" \
         -keyout "/root/udp/server.key" -out "/root/udp/server.crt" 2>/dev/null
 fi
 
-# Users database
 [ ! -f /root/udp/users.json ] && echo '{}' > /root/udp/users.json
 
-# Systemd service
 cat <<EOF > /etc/systemd/system/udp-custom.service
 [Unit]
 Description=UDP Custom Server
@@ -163,7 +138,6 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
-# Remove standalone udp command (we use onepesewa)
 rm -f /usr/local/bin/udp
 
 # ------------------ Firewall Rules ------------------
@@ -172,13 +146,11 @@ echo -e "${Y}[3/7] Configuring firewall...${NC}"
 iptables -I INPUT -p udp --dport 5667 -j ACCEPT 2>/dev/null || true
 iptables -I INPUT -p udp --dport 6000:19999 -j ACCEPT 2>/dev/null || true
 iptables -t nat -A PREROUTING -p udp --dport 6000:19999 -j DNAT --to-destination :5667 2>/dev/null || true
-
-# UDP Custom (new port 55000, gateway 7800)
+# UDP Custom
 iptables -I INPUT -p udp --dport 55000 -j ACCEPT 2>/dev/null || true
 iptables -I INPUT -p udp --dport 7800 -j ACCEPT 2>/dev/null || true
 iptables -I INPUT -p tcp --dport 7800 -j ACCEPT 2>/dev/null || true
 
-# Save rules
 netfilter-persistent save 2>/dev/null || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
 
 # ------------------ Install Unified Panel ------------------

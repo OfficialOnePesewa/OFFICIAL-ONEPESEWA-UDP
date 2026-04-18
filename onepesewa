@@ -1,5 +1,5 @@
 #!/bin/bash
-# OP UDP PANEL – Final Unified Dashboard with Connection Strings
+# OP UDP PANEL – Final with Correct UDP Custom Connection Format
 
 CONFIG="/etc/zivpn/config.json"
 DB="/etc/zivpn/users.db"
@@ -18,7 +18,7 @@ BOLD='\e[1m' DIM='\e[2m'
 
 command -v jq &>/dev/null || apt-get install -y jq -qq 2>/dev/null
 
-# ------------------ Geo Fetch (with multiple fallbacks) ------------------
+# ------------------ Geo Fetch (Multiple Fallbacks) ------------------
 fetch_geo() {
     if [ -f "$CACHE_FILE" ] && [ $(($(date +%s) - $(stat -c %Y "$CACHE_FILE" 2>/dev/null || echo 0))) -lt $CACHE_TTL ]; then
         source "$CACHE_FILE"
@@ -26,28 +26,28 @@ fetch_geo() {
     fi
     printf "${DIM}Fetching location...${RST}"
     GEO=""
-    for api in "https://ipapi.co/json/" "https://ipinfo.io/json" "https://ifconfig.co/json" "https://api.myip.com"; do
+    for api in "https://ipapi.co/json/" "https://ipinfo.io/json" "https://ifconfig.co/json"; do
         GEO=$(curl -4 -s --max-time 5 "$api" 2>/dev/null)
         if [ -n "$GEO" ] && echo "$GEO" | grep -qE '"ip"|"ip"'; then
             break
         fi
     done
+    # Fallback IP
     if [ -z "$GEO" ]; then
-        IP="N/A"; CITY="Unknown"; COUNTRY="Unknown"; ISP="Unknown"; ZIP=""; COUNTRY_CODE=""
+        IP=$(curl -4 -s ifconfig.me)
     else
         IP=$(echo "$GEO" | grep -oP '"ip":\s*"\K[^"]+' | head -1)
-        [ -z "$IP" ] && IP=$(curl -4 -s ifconfig.me)
         CITY=$(echo "$GEO" | grep -oP '"city":\s*"\K[^"]+' | head -1)
         COUNTRY=$(echo "$GEO" | grep -oP '"country":\s*"\K[^"]+' | head -1)
         [ -z "$COUNTRY" ] && COUNTRY=$(echo "$GEO" | grep -oP '"country_name":\s*"\K[^"]+')
         COUNTRY_CODE=$(echo "$GEO" | grep -oP '"country_code":\s*"\K[^"]+' | tr '[:upper:]' '[:lower:]')
         ZIP=$(echo "$GEO" | grep -oP '"postal":\s*"\K[^"]+')
         ISP=$(echo "$GEO" | grep -oP '"org":\s*"\K[^"]+')
-        [ -z "$IP" ] && IP="N/A"
-        [ -z "$CITY" ] && CITY="Unknown"
-        [ -z "$COUNTRY" ] && COUNTRY="Unknown"
-        [ -z "$ISP" ] && ISP="Unknown"
     fi
+    [ -z "$IP" ] && IP="N/A"
+    [ -z "$CITY" ] && CITY="Unknown"
+    [ -z "$COUNTRY" ] && COUNTRY="Unknown"
+    [ -z "$ISP" ] && ISP="Unknown"
     echo "IP=\"$IP\"; CITY=\"$CITY\"; COUNTRY=\"$COUNTRY\"; COUNTRY_CODE=\"$COUNTRY_CODE\"; ZIP=\"$ZIP\"; ISP=\"$ISP\"" > "$CACHE_FILE"
     printf "\r\033[K"
 }
@@ -192,7 +192,7 @@ service_control() {
     echo -e "${GRN}Command sent. Check status with option 4.${RST}"
 }
 
-# ------------------ Add User (with proper connection strings) ------------------
+# ------------------ Add User (with corrected UDP Custom connection string) ------------------
 add_user() {
     echo -e "\n${YLW}Select Protocol:${RST}"
     echo "  1) ZIVPN"
@@ -243,7 +243,7 @@ add_user() {
             echo -e "${CYN}│${RST} ${YLW}👤 Username :${RST} ${WHT}$username${RST}"
             echo -e "${CYN}│${RST} ${YLW}🔑 Password :${RST} ${WHT}$password${RST}"
             echo -e "${CYN}│${RST} ${YLW}📋 Connection String (copy exactly):${RST}"
-            echo -e "${CYN}│${RST}    ${WHT}$IP:36712@$username:$password${RST}"
+            echo -e "${CYN}│${RST}    ${WHT}$IP:1-65535@$username:$password${RST}"
             echo -e "${CYN}│${RST} ${YLW}⏳ Expiry   :${RST} ${WHT}$expiry ($days days)${RST}"
             echo -e "${CYN}├──────────────────────────────────────────────────────┤${RST}"
             echo -e "${CYN}│${RST} ${MAG}🌍 Server   :${RST} ${WHT}$CITY, $COUNTRY${RST}"

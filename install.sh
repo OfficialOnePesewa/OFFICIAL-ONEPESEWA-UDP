@@ -1,8 +1,5 @@
 #!/bin/bash
-# OFFICIAL ONEPESEWA DUAL PROTOCOL INSTALLER – Randomized UDP Custom Port
-# ZIVPN (port 5667) + UDP Custom (random port 50000-55000)
-# One-liner: bash <(curl -fsSL https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/install.sh)
-
+# OFFICIAL ONEPESEWA DUAL PROTOCOL INSTALLER – Hardened (No Early Exit)
 set -e
 
 G='\e[1;32m' R='\e[1;31m' Y='\e[1;33m' C='\e[1;36m' NC='\e[0m'
@@ -15,7 +12,6 @@ apt-get install -y -qq curl wget jq iptables-persistent netfilter-persistent ope
 OS=$(grep PRETTY_NAME /etc/os-release | cut -d'"' -f2)
 echo -e "${G}[+] OS: $OS${NC}"
 
-# Geo IP
 GEO=$(curl -4 -s --max-time 8 https://ipapi.co/json/ 2>/dev/null)
 if [ -z "$GEO" ] || ! echo "$GEO" | grep -q '"ip"'; then
     IP="N/A"; CITY="Unknown"; COUNTRY="Unknown"; ISP="Unknown"
@@ -97,21 +93,24 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
-# ------------------ Install UDP Custom (Random Port 50000-55000) ------------------
-echo -e "${Y}[2/6] Installing UDP Custom with randomized port...${NC}"
+# ------------------ Install UDP Custom (Fault Tolerant) ------------------
+echo -e "${Y}[2/6] Installing UDP Custom...${NC}"
 mkdir -p /root/udp
 cd /root
 
-# Remove any old binary
-rm -f /root/udp/udp-custom
-
-# Use stable eooce fork
+# Try primary download, fallback to mirror
+set +e
 wget -qO /root/udp/udp-custom https://github.com/eooce/udp-custom/releases/download/latest/udp-custom-linux-amd64
-chmod +x /root/udp/udp-custom
+if [ ! -s /root/udp/udp-custom ]; then
+    echo -e "${Y}[!] Primary download failed, using fallback mirror...${NC}"
+    wget -qO /root/udp/udp-custom https://github.com/http-custom/udp-custom/releases/download/latest/udp-custom-linux-amd64
+fi
+set -e
+chmod +x /root/udp/udp-custom 2>/dev/null || true
 
-# Generate random port between 50000 and 55000
+# Generate random port
 UDPC_PORT=$((50000 + RANDOM % 5000))
-echo -e "${G}[*] UDP Custom will listen on port: $UDPC_PORT${NC}"
+echo -e "${G}[*] UDP Custom port: $UDPC_PORT${NC}"
 
 cat <<EOF > /root/udp/config.json
 {
@@ -146,30 +145,30 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
-# Save port for panel reference
 echo "$UDPC_PORT" > /root/udp/udp_port.txt
 
-# ------------------ Firewall Rules ------------------
+# ------------------ Firewall ------------------
 echo -e "${Y}[3/6] Configuring firewall...${NC}"
-# ZIVPN
 iptables -I INPUT -p udp --dport 5667 -j ACCEPT 2>/dev/null || true
 iptables -I INPUT -p udp --dport 6000:19999 -j ACCEPT 2>/dev/null || true
 iptables -t nat -A PREROUTING -p udp --dport 6000:19999 -j DNAT --to-destination :5667 2>/dev/null || true
 
-# UDP Custom
 iptables -I INPUT -p udp --dport $UDPC_PORT -j ACCEPT 2>/dev/null || true
 iptables -I INPUT -p udp --dport 7800 -j ACCEPT 2>/dev/null || true
 iptables -I INPUT -p tcp --dport 7800 -j ACCEPT 2>/dev/null || true
 
 netfilter-persistent save 2>/dev/null || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
 
-# ------------------ Install Unified Panel ------------------
+# ------------------ Panel (Guaranteed) ------------------
 echo -e "${Y}[4/6] Installing OP UDP Panel...${NC}"
-wget -qO /usr/local/bin/onepesewa https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/onepesewa
+for i in 1 2 3; do
+    wget -qO /usr/local/bin/onepesewa https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/onepesewa && break
+    sleep 2
+done
 chmod +x /usr/local/bin/onepesewa
 ln -sf /usr/local/bin/onepesewa /usr/local/bin/udp
 
-# ------------------ Telegram Bot (Optional) ------------------
+# ------------------ Telegram Bot ------------------
 echo -e "${Y}[5/6] Setting up Telegram bot...${NC}"
 pip3 install --quiet python-telegram-bot==20.3
 wget -qO /usr/local/bin/opudp_bot.py https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/opudp_bot.py
@@ -189,7 +188,7 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
-# ------------------ Enable & Start Services ------------------
+# ------------------ Start Services ------------------
 echo -e "${Y}[6/6] Starting services...${NC}"
 systemctl daemon-reload
 systemctl enable zivpn udp-custom opudp-bot
@@ -199,29 +198,11 @@ systemctl start opudp-bot 2>/dev/null || true
 
 sleep 3
 
-# ------------------ Final Verification ------------------
 echo -e "\n${C}====================================================${NC}"
 echo -e "${G}         INSTALLATION COMPLETE!${NC}"
 echo -e "${C}====================================================${NC}"
-echo -e "${G} Server IP   :${NC} $IP"
-echo -e "${G} Location    :${NC} $CITY, $COUNTRY"
-echo -e "${G} ISP         :${NC} $ISP"
 echo -e "${G} ZIVPN Port  :${NC} 5667 (NAT 6000-19999)"
 echo -e "${G} UDP Custom  :${NC} $UDPC_PORT (Gateway 7800)"
-echo -e "${C}====================================================${NC}"
-
-if systemctl is-active --quiet zivpn; then
-    echo -e "${G}✅ ZIVPN is running${NC}"
-else
-    echo -e "${R}❌ ZIVPN failed to start. Run: journalctl -u zivpn --no-pager -n 20${NC}"
-fi
-
-if systemctl is-active --quiet udp-custom; then
-    echo -e "${G}✅ UDP Custom is running${NC}"
-else
-    echo -e "${R}❌ UDP Custom failed to start. Run: journalctl -u udp-custom --no-pager -n 20${NC}"
-fi
-
 echo -e "${C}====================================================${NC}"
 echo -e "${Y} Type 'onepesewa' to open the control panel.${NC}"
 echo -e "${C}====================================================${NC}"

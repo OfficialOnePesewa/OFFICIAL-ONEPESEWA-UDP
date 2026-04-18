@@ -67,7 +67,6 @@ get_sysinfo() {
     
     if systemctl is-active --quiet udp-custom; then
         UDPC_STATUS="${GRN}🟢 active${RST}"
-        # UDP Custom user count (from its own DB if exists)
         UDPC_USERS=$(grep -c '^' /root/udp/users.json 2>/dev/null || echo "0")
     else
         UDPC_STATUS="${RED}🔴 inactive${RST}"
@@ -150,6 +149,46 @@ service_control() {
     esac
 }
 
+# ------------------ Bot CLI Mode ------------------
+if [[ "$1" == "--bot-"* ]]; then
+    cmd="${1#--bot-}"
+    shift
+    case "$cmd" in
+        adduser) basepass="$1"; days="$2"; quota="$3"; devid="$4"
+            [ -n "$devid" ] && finalpass="${basepass}_${devid}" || finalpass="$basepass"
+            exp=$(date -d "+$days days" +%Y-%m-%d)
+            port=$(find_free_port)
+            jq --arg p "$finalpass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
+            echo "$finalpass|$exp|$quota|$port|$devid|$(date +%Y-%m-%d)" >> "$DB"
+            echo "$finalpass|0" >> "$USAGE_DB"
+            systemctl restart zivpn 2>/dev/null
+            echo "SUCCESS|$finalpass|$exp|$port|$quota"
+            ;;
+        removeuser) pass="$1"
+            jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
+            sed -i "/^$pass|/d" "$DB" "$USAGE_DB"
+            systemctl restart zivpn 2>/dev/null
+            echo "✅ User removed."
+            ;;
+        renew) pass="$1"; days="$2"
+            oldexp=$(grep "^$pass|" "$DB" | cut -d'|' -f2)
+            newexp=$(date -d "$oldexp +$days days" +%Y-%m-%d)
+            sed -i "s|^$pass|$oldexp|$pass|$newexp|" "$DB"
+            echo "✅ Expiry extended to $newexp"
+            ;;
+        cleanup) today=$(date +%Y-%m-%d)
+            while IFS='|' read -r p exp q port dev start; do
+                [[ "$exp" < "$today" ]] && jq --arg p "$p" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG" && sed -i "/^$p|/d" "$DB" "$USAGE_DB"
+            done < "$DB"
+            systemctl restart zivpn 2>/dev/null
+            echo "✅ Cleanup done."
+            ;;
+        update-usage) update_usage_db ;;
+        *) echo "Unknown bot command"; exit 1 ;;
+    esac
+    exit 0
+fi
+
 # ------------------ Main Loop ------------------
 fetch_geo
 
@@ -165,15 +204,22 @@ while true; do
         3) service_control restart; read -p "Press Enter..." ;;
         4) systemctl status zivpn --no-pager; systemctl status udp-custom --no-pager; read -p "Press Enter..." ;;
         5) column -t -s "|" "$DB"; read -p "Press Enter..." ;;
-        6) read -p "BasePass: " bp; read -p "Days: " d; read -p "Quota: " q; read -p "DevID: " dev; /usr/local/bin/onepesewa --bot-adduser "$bp" "$d" "$q" "$dev"; read -p "Press Enter..." ;;
+        6) read -p "BasePass: " bp; read -p "Days: " d; read -p "Quota: " q; read -p "DevID: " dev
+           /usr/local/bin/onepesewa --bot-adduser "$bp" "$d" "$q" "$dev"
+           read -p "Press Enter..." ;;
         7) read -p "Pass: " p; /usr/local/bin/onepesewa --bot-removeuser "$p"; read -p "Press Enter..." ;;
         8) read -p "Pass: " p; read -p "Days: " d; /usr/local/bin/onepesewa --bot-renew "$p" "$d"; read -p "Press Enter..." ;;
         9) /usr/local/bin/onepesewa --bot-cleanup; read -p "Press Enter..." ;;
-        10) /usr/local/bin/onepesewa --update-usage; echo "Usage stats:"; cat "$USAGE_DB"; read -p "Press Enter..." ;;
+        10) /usr/local/bin/onepesewa --bot-update-usage; echo "Usage stats:"; cat "$USAGE_DB"; read -p "Press Enter..." ;;
         11) journalctl -u zivpn -u udp-custom -f ;;
         12) echo "Restore function"; read -p "Press Enter..." ;;
-        13) read -p "Minutes: " m; pass="trial_$(openssl rand -hex 2)"; /usr/local/bin/onepesewa --bot-adduser "$pass" 1 "100MB" "trial"; echo "Trial: $pass"; (sleep $((m*60)); /usr/local/bin/onepesewa --bot-removeuser "$pass") & read -p "Press Enter..." ;;
-        14) read -p "Bot Token: " t; echo "$t" > /etc/zivpn/telegram_token; systemctl enable opudp-bot 2>/dev/null; systemctl restart opudp-bot 2>/dev/null; echo "Bot configured."; read -p "Press Enter..." ;;
+        13) read -p "Minutes: " m; pass="trial_$(openssl rand -hex 2)"
+            /usr/local/bin/onepesewa --bot-adduser "$pass" 1 "100MB" "trial"
+            echo "Trial: $pass"
+            (sleep $((m*60)); /usr/local/bin/onepesewa --bot-removeuser "$pass") & read -p "Press Enter..." ;;
+        14) read -p "Bot Token: " t; echo "$t" > /etc/zivpn/telegram_token
+            systemctl enable opudp-bot 2>/dev/null; systemctl restart opudp-bot 2>/dev/null
+            echo "Bot configured."; read -p "Press Enter..." ;;
         99) systemctl stop zivpn udp-custom; rm -rf /etc/zivpn /usr/local/bin/zivpn /usr/local/bin/onepesewa /root/udp; echo "Uninstalled."; exit ;;
         0) clear; echo "Goodbye!"; exit ;;
         *) echo -e "${RED}Invalid.${RST}"; read -p "Press Enter..." ;;

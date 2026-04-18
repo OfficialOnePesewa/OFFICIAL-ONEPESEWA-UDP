@@ -1,24 +1,19 @@
 #!/bin/bash
-# OFFICIAL ONEPESEWA UDP Installer – Debian/Ubuntu with VoIP Support
+# OFFICIAL ONEPESEWA DUAL PROTOCOL INSTALLER – ZIVPN + UDP Custom
 set -e
 
-# Colors
 G='\e[1;32m' R='\e[1;31m' Y='\e[1;33m' C='\e[1;36m' NC='\e[0m'
-
-# Root check
 [ "$EUID" -ne 0 ] && echo -e "${R}Run as root.${NC}" && exit 1
 
-# Install essentials
-echo -e "${Y}[+] Updating & installing curl/wget...${NC}"
+echo -e "${Y}[+] Updating system & installing dependencies...${NC}"
 apt-get update -qq
-apt-get install -y -qq curl wget
+apt-get install -y -qq curl wget jq iptables-persistent netfilter-persistent openssl vnstat bc python3 python3-pip git
 
 # OS info
 OS=$(grep PRETTY_NAME /etc/os-release | cut -d'"' -f2)
 echo -e "${G}[+] OS: $OS${NC}"
 
-# Geo IP (ipapi.co with fallback)
-echo -e "${Y}[+] Fetching server info...${NC}"
+# Geo IP
 GEO=$(curl -4 -s --max-time 8 https://ipapi.co/json/ 2>/dev/null)
 if [ -z "$GEO" ] || ! echo "$GEO" | grep -q '"ip"'; then
     IP="N/A"; CITY="Unknown"; COUNTRY="Unknown"; ISP="Unknown"
@@ -32,9 +27,7 @@ else
     [ -z "$COUNTRY" ] && COUNTRY="Unknown"
     [ -z "$ISP" ] && ISP="Unknown"
 fi
-LOC="$CITY, $COUNTRY"
 
-# Banner
 clear
 echo -e "${G}"
 echo "   ___  _   _ ______ _____  ______ ______ _    _ ______          _    _ ______ _____  "
@@ -46,41 +39,28 @@ echo "  \___/|_| \_|______|_|    |______|______|\____/|______/_/    \_\\____/|_|
 echo -e "${NC}"
 echo "---------------------------------------------------"
 echo "  OS       : $OS"
-echo "  Location : $LOC"
+echo "  Location : $CITY, $COUNTRY"
 echo "  IP       : $IP"
 echo "  ISP      : $ISP"
 echo "  Admin    : @OfficialOnePesewa"
 echo "---------------------------------------------------"
 
-# Dependencies
-echo -e "${Y}[1/6] Installing dependencies...${NC}"
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq iptables-persistent netfilter-persistent openssl vnstat bc
-
-# Architecture
-echo -e "${Y}[2/6] Detecting architecture...${NC}"
+# ------------------ Install ZIVPN ------------------
+echo -e "${Y}[1/8] Installing ZIVPN...${NC}"
 ARCH=$(uname -m)
 case $ARCH in
     x86_64|amd64) BIN="amd64" ;;
     aarch64|arm64) BIN="arm64" ;;
     *) echo -e "${R}Unsupported: $ARCH${NC}"; exit 1 ;;
 esac
-echo -e "${G}   Architecture: $ARCH -> $BIN${NC}"
 
-# Stop & remove old binary (fixes "Text file busy")
-echo -e "${Y}[*] Stopping old ZIVPN service & removing binary...${NC}"
 systemctl stop zivpn 2>/dev/null || true
 rm -f /usr/local/bin/zivpn
 
-# Download ZIVPN binary
-echo -e "${Y}[3/6] Downloading ZIVPN binary...${NC}"
 wget -q --show-progress -O /usr/local/bin/zivpn \
-    "https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-$BIN" || {
-    echo -e "${R}Failed to download binary.${NC}"; exit 1
-}
+    "https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-$BIN"
 chmod +x /usr/local/bin/zivpn
 
-# Config & DB
-echo -e "${Y}[4/6] Setting up config...${NC}"
 mkdir -p /etc/zivpn
 cat <<EOF > /etc/zivpn/config.json
 {
@@ -94,42 +74,12 @@ cat <<EOF > /etc/zivpn/config.json
   }
 }
 EOF
-touch /etc/zivpn/users.db
+touch /etc/zivpn/users.db /etc/zivpn/usage.db /etc/zivpn/telegram.db /etc/zivpn/admins.db /etc/zivpn/last_sent.db
 
-# SSL cert
-echo -e "${Y}[5/6] Generating SSL certificate...${NC}"
 openssl req -new -newkey rsa:4096 -days 365 -nodes -x509 \
     -subj "/C=GH/ST=Accra/L=Accra/O=OnePesewa/CN=onepesewa" \
     -keyout "/etc/zivpn/zivpn.key" -out "/etc/zivpn/zivpn.crt" 2>/dev/null
 
-# Firewall & NAT (VoIP optimized)
-echo -e "${Y}[6/6] Configuring firewall (VoIP ready)...${NC}"
-# Disable UFW if present
-command -v ufw &>/dev/null && ufw disable &>/dev/null
-
-# Allow SSH
-iptables -I INPUT -p tcp --dport 22 -j ACCEPT 2>/dev/null || true
-
-# Allow ZIVPN main port
-iptables -I INPUT -p udp --dport 5667 -j ACCEPT 2>/dev/null || true
-
-# Allow SIP signalling (VoIP)
-iptables -I INPUT -p udp --dport 5060 -j ACCEPT 2>/dev/null || true
-
-# Allow RTP media ports (VoIP) and user UDP range
-iptables -I INPUT -p udp --dport 6000:19999 -j ACCEPT 2>/dev/null || true
-
-# NAT forwarding for user UDP range
-iptables -t nat -A PREROUTING -p udp --dport 6000:19999 -j DNAT --to-destination :5667 2>/dev/null || true
-
-# Persist rules
-if command -v netfilter-persistent &>/dev/null; then
-    netfilter-persistent save
-elif command -v iptables-save &>/dev/null; then
-    iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
-fi
-
-# Systemd service
 cat <<EOF > /etc/systemd/system/zivpn.service
 [Unit]
 Description=ZIVPN UDP Server
@@ -144,28 +94,87 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
-systemctl daemon-reload
-systemctl enable zivpn
-systemctl start zivpn
+# ------------------ Install UDP Custom ------------------
+echo -e "${Y}[2/8] Installing UDP Custom...${NC}"
+cd /root
+rm -rf udp-custom-2 2>/dev/null
+git clone https://github.com/http-custom/udp-custom udp-custom-2
+cd udp-custom-2
+chmod +x install.sh
+./install.sh || true
 
-# Install panel
-echo -e "${Y}[+] Installing onepesewa panel...${NC}"
-wget -qO /usr/local/bin/onepesewa \
-    https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/onepesewa || {
-    echo -e "${R}Failed to download panel.${NC}"; exit 1
-}
+# Ensure UDP Custom service exists and is configured
+cat > /etc/systemd/system/udp-custom.service << 'EOF'
+[Unit]
+Description=UDP Custom Server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/udp
+ExecStart=/root/udp/udp-custom server --config /root/udp/config.json
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# ------------------ Firewall Rules ------------------
+echo -e "${Y}[3/8] Configuring firewall...${NC}"
+# ZIVPN
+iptables -I INPUT -p udp --dport 5667 -j ACCEPT 2>/dev/null || true
+iptables -I INPUT -p udp --dport 6000:19999 -j ACCEPT 2>/dev/null || true
+iptables -t nat -A PREROUTING -p udp --dport 6000:19999 -j DNAT --to-destination :5667 2>/dev/null || true
+# UDP Custom (default ports)
+iptables -I INPUT -p udp --dport 36712 -j ACCEPT 2>/dev/null || true
+iptables -I INPUT -p udp --dport 7800 -j ACCEPT 2>/dev/null || true
+iptables -I INPUT -p tcp --dport 7800 -j ACCEPT 2>/dev/null || true
+
+netfilter-persistent save 2>/dev/null || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+
+# ------------------ Install Panel ------------------
+echo -e "${Y}[4/8] Installing OP UDP Panel...${NC}"
+wget -qO /usr/local/bin/onepesewa https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/onepesewa
 chmod +x /usr/local/bin/onepesewa
 
-# Final summary
+# ------------------ Telegram Bot ------------------
+echo -e "${Y}[5/8] Setting up Telegram bot...${NC}"
+pip3 install --quiet python-telegram-bot==20.3
+wget -qO /usr/local/bin/opudp_bot.py https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/opudp_bot.py
+chmod +x /usr/local/bin/opudp_bot.py
+
+cat <<EOF > /etc/systemd/system/opudp-bot.service
+[Unit]
+Description=OP UDP Telegram Bot
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/bin/opudp_bot.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+# ------------------ Enable Services ------------------
+echo -e "${Y}[6/8] Starting services...${NC}"
+systemctl daemon-reload
+systemctl enable zivpn udp-custom opudp-bot
+systemctl start zivpn
+systemctl start udp-custom
+systemctl start opudp-bot 2>/dev/null || true
+
+# ------------------ Final Summary ------------------
 echo -e "\n${C}====================================================${NC}"
 echo -e "${G}         INSTALLATION COMPLETE!${NC}"
 echo -e "${C}====================================================${NC}"
-echo -e "${G} Server IP  :${NC} $IP"
-echo -e "${G} Location   :${NC} $LOC"
-echo -e "${G} ISP        :${NC} $ISP"
-echo -e "${G} ZIVPN Port :${NC} 5667 (UDP)"
-echo -e "${G} NAT Range  :${NC} 6000 - 19999 (inc. VoIP RTP)"
-echo -e "${G} VoIP SIP   :${NC} 5060 (UDP)"
+echo -e "${G} Server IP   :${NC} $IP"
+echo -e "${G} Location    :${NC} $CITY, $COUNTRY"
+echo -e "${G} ISP         :${NC} $ISP"
+echo -e "${G} ZIVPN Port  :${NC} 5667 (NAT 6000-19999)"
+echo -e "${G} UDP Custom  :${NC} 36712 (Gateway 7800)"
 echo -e "${C}====================================================${NC}"
-echo -e "${Y} Type 'onepesewa' to open the panel.${NC}"
+echo -e "${Y} Type 'onepesewa' to open the control panel.${NC}"
 echo -e "${C}====================================================${NC}"

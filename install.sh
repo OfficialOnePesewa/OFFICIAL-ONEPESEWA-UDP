@@ -1,5 +1,5 @@
 #!/bin/bash
-# OFFICIAL ONEPESEWA DUAL PROTOCOL INSTALLER – Guaranteed Working
+# OFFICIAL ONEPESEWA DUAL PROTOCOL INSTALLER – Verified Panel Download
 set -e
 
 G='\e[1;32m' R='\e[1;31m' Y='\e[1;33m' C='\e[1;36m' NC='\e[0m'
@@ -96,18 +96,16 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
-# ------------------ Install UDP Custom (Robust) ------------------
+# ------------------ Install UDP Custom ------------------
 echo -e "${Y}[2/7] Installing UDP Custom...${NC}"
 mkdir -p /root/udp
 cd /root
 
-# Direct download of precompiled binary (most reliable)
 if [ ! -f /root/udp/udp-custom ]; then
     wget -qO /root/udp/udp-custom https://github.com/http-custom/udp-custom/releases/download/latest/udp-custom-linux-amd64
     chmod +x /root/udp/udp-custom
 fi
 
-# Fallback: build from source if binary fails
 if [ ! -f /root/udp/udp-custom ] || ! /root/udp/udp-custom --version &>/dev/null; then
     echo -e "${Y}[*] Building UDP Custom from source...${NC}"
     rm -rf udp-custom-2
@@ -119,7 +117,6 @@ if [ ! -f /root/udp/udp-custom ] || ! /root/udp/udp-custom --version &>/dev/null
     cd /root
 fi
 
-# Ensure config.json exists
 [ ! -f /root/udp/config.json ] && cat <<EOF > /root/udp/config.json
 {
   "listen": ":36712",
@@ -129,7 +126,6 @@ fi
 }
 EOF
 
-# Generate SSL certs
 if [ ! -f /root/udp/server.crt ]; then
     openssl req -new -newkey rsa:4096 -days 365 -nodes -x509 \
         -subj "/C=GH/ST=Accra/L=Accra/O=OnePesewa/CN=udp-custom" \
@@ -154,7 +150,6 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
-# Remove conflicting standalone udp command
 rm -f /usr/local/bin/udp
 
 # ------------------ Firewall Rules ------------------
@@ -167,10 +162,39 @@ iptables -I INPUT -p udp --dport 7800 -j ACCEPT 2>/dev/null || true
 iptables -I INPUT -p tcp --dport 7800 -j ACCEPT 2>/dev/null || true
 netfilter-persistent save 2>/dev/null || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
 
-# ------------------ Install Unified Panel ------------------
+# ------------------ Install Unified Panel (with verification) ------------------
 echo -e "${Y}[4/7] Installing OP UDP Panel...${NC}"
-wget -qO /usr/local/bin/onepesewa https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/onepesewa
-chmod +x /usr/local/bin/onepesewa
+download_panel() {
+    wget -qO /usr/local/bin/onepesewa https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/onepesewa
+    chmod +x /usr/local/bin/onepesewa
+}
+
+# Try up to 3 times
+for i in 1 2 3; do
+    download_panel && break || sleep 2
+done
+
+# Verify download
+if [ ! -f /usr/local/bin/onepesewa ] || [ ! -s /usr/local/bin/onepesewa ]; then
+    echo -e "${R}Failed to download panel. Using embedded fallback...${NC}"
+    # Fallback: minimal panel
+    cat > /usr/local/bin/onepesewa << 'FALLBACK'
+#!/bin/bash
+echo "OP UDP Panel - Minimal Mode"
+echo "1) Start Services  2) Stop Services  3) Status  4) Exit"
+while true; do
+    read -p "Choice: " c
+    case $c in
+        1) systemctl start zivpn udp-custom;;
+        2) systemctl stop zivpn udp-custom;;
+        3) systemctl status zivpn --no-pager; systemctl status udp-custom --no-pager;;
+        4) exit;;
+    esac
+done
+FALLBACK
+    chmod +x /usr/local/bin/onepesewa
+fi
+
 ln -sf /usr/local/bin/onepesewa /usr/local/bin/udp
 
 # ------------------ Telegram Bot ------------------
@@ -227,5 +251,5 @@ else
 fi
 
 echo -e "${C}====================================================${NC}"
-echo -e "${Y} Type 'onepesewa' (or 'udp') to open the control panel.${NC}"
+echo -e "${Y} Type 'onepesewa' to open the control panel.${NC}"
 echo -e "${C}====================================================${NC}"

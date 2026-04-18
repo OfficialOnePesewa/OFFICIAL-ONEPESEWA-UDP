@@ -1,5 +1,5 @@
 #!/bin/bash
-# OP UDP PANEL – Dual Protocol (ZIVPN + UDP Custom) with Unified User Cards
+# OP UDP PANEL – Dual Protocol with Connection Strings & Donation Banner
 
 CONFIG="/etc/zivpn/config.json"
 DB="/etc/zivpn/users.db"
@@ -10,7 +10,6 @@ PORT_START=6001
 PORT_END=19999
 DAEMON_PID_FILE="/var/run/opudp_daemon.pid"
 
-# UDP Custom paths
 UDPC_DIR="/root/udp"
 UDPC_USERS="$UDPC_DIR/users.json"
 UDPC_CONFIG="$UDPC_DIR/config.json"
@@ -129,7 +128,7 @@ print_menu() {
     echo -e "${WHT}│${RST}                                                                             ${WHT}│${RST}"
     echo -e "${WHT}│${RST}   ${GRN}11)${RST}  📜 Live Logs             ${GRN}12)${RST}  ♻️  Restore Backup                 ${WHT}│${RST}"
     echo -e "${WHT}│${RST}   ${GRN}13)${RST}  🧪 Trial User            ${GRN}14)${RST}  🤖 Telegram Setup                ${WHT}│${RST}"
-    echo -e "${WHT}│${RST}   ${GRN}15)${RST}  📋 List UDP Custom Users                                               ${WHT}│${RST}"
+    echo -e "${WHT}│${RST}   ${GRN}15)${RST}  📋 List UDP Custom Users ${GRN}16)${RST}  💰 Donate / Support               ${WHT}│${RST}"
     echo -e "${WHT}│${RST}                                                                             ${WHT}│${RST}"
     echo -e "${WHT}├─────────────────────────────────────────────────────────────────────────────┤${RST}"
     echo -e "${WHT}│${RST}                                                                             ${WHT}│${RST}"
@@ -137,14 +136,13 @@ print_menu() {
     echo -e "${WHT}│${RST}   ${GRN}0)${RST}  🚪 Exit                                                               ${WHT}│${RST}"
     echo -e "${WHT}│${RST}                                                                             ${WHT}│${RST}"
     echo -e "${WHT}└─────────────────────────────────────────────────────────────────────────────┘${RST}"
+    echo -e "${YLW}💛 Support VPS Hosting – Donations Welcome: Telecel Cash: 0502013764${RST}"
     echo ""
 }
 
 # ------------------ UDP Custom Helpers ------------------
 udpc_add_user() {
-    local days=$1
-    local username=$(openssl rand -hex 4)
-    local password=$(openssl rand -hex 6)
+    local username=$1 password=$2 days=$3
     local exp_date=$(date -d "+$days days" +%Y-%m-%d)
     
     # Add to UDP Custom users.json
@@ -153,8 +151,7 @@ udpc_add_user() {
         '. + {($user): {"password": $pass, "expiry": $exp}}' "$UDPC_USERS" > "$tmp" 2>/dev/null
     mv "$tmp" "$UDPC_USERS"
     systemctl restart udp-custom 2>/dev/null
-    
-    echo "$username|$password|$exp_date"
+    echo "$exp_date"
 }
 
 udpc_remove_user() {
@@ -174,7 +171,7 @@ udpc_list_users() {
     fi
 }
 
-# ------------------ Add User (Unified) ------------------
+# ------------------ Add User (Unified with manual entry) ------------------
 add_user() {
     echo -e "\n${YLW}Select Protocol:${RST}"
     echo "  1) ZIVPN"
@@ -203,6 +200,7 @@ add_user() {
             echo -e "${CYN}├──────────────────────────────────────────────────────┤${RST}"
             echo -e "${CYN}│${RST} ${YLW}🔑 UDP Password :${RST} ${WHT}$finalpass${RST}"
             echo -e "${CYN}│${RST}   ${DIM}(Copy the entire string above)${RST}"
+            echo -e "${CYN}│${RST} ${YLW}📋 Connection   :${RST} ${WHT}zivpn://$finalpass@$IP:5667/${RST}"
             echo -e "${CYN}│${RST} ${YLW}📡 Assigned Port:${RST} ${WHT}$port${RST}"
             echo -e "${CYN}│${RST} ${YLW}⏳ Expiry       :${RST} ${WHT}$exp ($days Days)${RST}"
             echo -e "${CYN}│${RST} ${YLW}📊 Quota        :${RST} ${WHT}$quota${RST}"
@@ -216,13 +214,15 @@ add_user() {
             ;;
         2)
             echo -e "\n${YLW}╭────────────────── CREATE UDP CUSTOM USER ──────────────────╮${RST}"
+            read -p "$(echo -e "${GRN}Username (leave blank to auto‑generate): ${RST}")" username
+            read -p "$(echo -e "${GRN}Password (leave blank to auto‑generate): ${RST}")" password
             read -p "$(echo -e "${GRN}Validity (Days): ${RST}")" days
             echo -e "${YLW}╰─────────────────────────────────────────────────────────────╯${RST}"
             
-            creds=$(udpc_add_user "$days")
-            username=$(echo "$creds" | cut -d'|' -f1)
-            password=$(echo "$creds" | cut -d'|' -f2)
-            expiry=$(echo "$creds" | cut -d'|' -f3)
+            [ -z "$username" ] && username=$(openssl rand -hex 4)
+            [ -z "$password" ] && password=$(openssl rand -hex 6)
+            
+            expiry=$(udpc_add_user "$username" "$password" "$days")
             
             fetch_geo
             echo -e "\n${CYN}╭──────────────────────────────────────────────────────╮${RST}"
@@ -230,8 +230,9 @@ add_user() {
             echo -e "${CYN}├──────────────────────────────────────────────────────┤${RST}"
             echo -e "${CYN}│${RST} ${YLW}👤 Username     :${RST} ${WHT}$username${RST}"
             echo -e "${CYN}│${RST} ${YLW}🔑 Password     :${RST} ${WHT}$password${RST}"
-            echo -e "${CYN}│${RST} ${YLW}📡 Port         :${RST} ${WHT}36712${RST}"
+            echo -e "${CYN}│${RST} ${YLW}📋 Connection   :${RST} ${WHT}udp://$username:$password@$IP:36712/${RST}"
             echo -e "${CYN}│${RST} ${YLW}🌐 Gateway      :${RST} ${WHT}7800${RST}"
+            echo -e "${CYN}│${RST} ${YLW}📡 Port         :${RST} ${WHT}36712${RST}"
             echo -e "${CYN}│${RST} ${YLW}⏳ Expiry       :${RST} ${WHT}$expiry ($days Days)${RST}"
             echo -e "${CYN}├──────────────────────────────────────────────────────┤${RST}"
             echo -e "${CYN}│${RST} ${MAG}🌍 Server IP    :${RST} ${WHT}$IP${RST}"
@@ -282,6 +283,22 @@ service_control() {
         3) systemctl $action zivpn udp-custom;;
         *) echo "Invalid";;
     esac
+}
+
+# ------------------ Donation Info ------------------
+show_donation() {
+    clear
+    echo -e "${CYN}╭──────────────────────────────────────────────────────╮${RST}"
+    echo -e "${CYN}│                                                      │${RST}"
+    echo -e "${CYN}│  ${GRN}${BOLD}💛 SUPPORT VPS HOSTING – DONATIONS WELCOME 💛${RST}${CYN}         │${RST}"
+    echo -e "${CYN}│                                                      │${RST}"
+    echo -e "${CYN}│  ${YLW}Telecel Cash:${RST} ${WHT}0502013764${RST}                           ${CYN}│${RST}"
+    echo -e "${CYN}│                                                      │${RST}"
+    echo -e "${CYN}│  ${DIM}Any amount accepted. Thank you for your support!${RST}     ${CYN}│${RST}"
+    echo -e "${CYN}│                                                      │${RST}"
+    echo -e "${CYN}╰──────────────────────────────────────────────────────╯${RST}"
+    echo ""
+    read -p "Press Enter to continue..."
 }
 
 # ------------------ Bot CLI Mode ------------------
@@ -352,6 +369,7 @@ while true; do
             systemctl enable opudp-bot 2>/dev/null; systemctl restart opudp-bot 2>/dev/null
             echo "Bot configured."; read -p "Press Enter..." ;;
         15) udpc_list_users; read -p "Press Enter..." ;;
+        16) show_donation ;;
         99) systemctl stop zivpn udp-custom; rm -rf /etc/zivpn /usr/local/bin/zivpn /usr/local/bin/onepesewa /root/udp; echo "Uninstalled."; exit ;;
         0) clear; echo "Goodbye!"; exit ;;
         *) echo -e "${RED}Invalid.${RST}"; read -p "Press Enter..." ;;

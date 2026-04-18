@@ -5,7 +5,6 @@ set -e
 G='\e[1;32m' Y='\e[1;33m' NC='\e[0m'
 echo -e "${Y}[*] Applying VPS network optimizations...${NC}"
 
-# Enable BBR congestion control (requires kernel >= 4.9)
 KVER=$(uname -r | cut -d. -f1-2)
 if [ "$(printf '%s\n' "4.9" "$KVER" | sort -V | head -n1)" = "4.9" ]; then
     modprobe tcp_bbr 2>/dev/null || true
@@ -17,10 +16,8 @@ else
     echo -e "${Y}[!] Kernel too old for BBR (requires 4.9+)${NC}"
 fi
 
-# Apply comprehensive sysctl optimizations
 cat >> /etc/sysctl.conf << 'EOF'
 
-# VPN / High-Performance Network Optimizations
 net.core.rmem_max = 134217728
 net.core.wmem_max = 134217728
 net.core.rmem_default = 16777216
@@ -64,7 +61,6 @@ EOF
 
 sysctl -p > /dev/null 2>&1
 
-# Increase open file limits
 cat >> /etc/security/limits.conf << 'EOF'
 * soft nofile 1048576
 * hard nofile 1048576

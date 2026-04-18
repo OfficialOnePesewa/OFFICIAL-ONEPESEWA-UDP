@@ -1,5 +1,5 @@
 #!/bin/bash
-# OP UDP PANEL – Final with Correct UDP Custom Connection Format
+# OP UDP PANEL – Final Unified Dashboard (ZIVPN + UDP Custom)
 
 CONFIG="/etc/zivpn/config.json"
 DB="/etc/zivpn/users.db"
@@ -18,7 +18,6 @@ BOLD='\e[1m' DIM='\e[2m'
 
 command -v jq &>/dev/null || apt-get install -y jq -qq 2>/dev/null
 
-# ------------------ Geo Fetch (Multiple Fallbacks) ------------------
 fetch_geo() {
     if [ -f "$CACHE_FILE" ] && [ $(($(date +%s) - $(stat -c %Y "$CACHE_FILE" 2>/dev/null || echo 0))) -lt $CACHE_TTL ]; then
         source "$CACHE_FILE"
@@ -32,9 +31,9 @@ fetch_geo() {
             break
         fi
     done
-    # Fallback IP
     if [ -z "$GEO" ]; then
         IP=$(curl -4 -s ifconfig.me)
+        CITY="Unknown"; COUNTRY="Unknown"; ISP="Unknown"; ZIP=""; COUNTRY_CODE=""
     else
         IP=$(echo "$GEO" | grep -oP '"ip":\s*"\K[^"]+' | head -1)
         CITY=$(echo "$GEO" | grep -oP '"city":\s*"\K[^"]+' | head -1)
@@ -115,7 +114,7 @@ print_info() {
     echo -e "${WHT}│${RST}  ${GRN}📡 ZIVPN       :${RST} $ZIVPN_STATUS  ${CYN}$ZIVPN_USERS users${RST}"
     echo -e "${WHT}│${RST}  ${BLU}🔷 UDP Custom  :${RST} $UDPC_STATUS  ${CYN}$UDPC_USERS users${RST}"
     echo -e "${WHT}│${RST}  ${MAG}🎯 ZIVPN Port  :${RST} 5667 (NAT $PORT_START-$PORT_END)"
-    echo -e "${WHT}│${RST}  ${MAG}📶 UDPC Port   :${RST} 36712 (Gateway 7800)"
+    echo -e "${WHT}│${RST}  ${MAG}📶 UDPC Port   :${RST} 55000 (Gateway 7800)"
     echo -e "${WHT}├─────────────────────────────────────────────────────────────────────────────┤${RST}"
 }
 
@@ -137,7 +136,6 @@ print_menu() {
     echo ""
 }
 
-# ------------------ UDP Custom Helpers ------------------
 udpc_add_user() {
     local username=$1 password=$2 days=$3
     local exp_date=$(date -d "+$days days" +%Y-%m-%d)
@@ -175,7 +173,6 @@ find_free_port() {
     echo ""
 }
 
-# ------------------ Service Control (Non‑Blocking) ------------------
 service_control() {
     action=$1
     echo -e "${YLW}Select service:${RST}"
@@ -192,7 +189,6 @@ service_control() {
     echo -e "${GRN}Command sent. Check status with option 4.${RST}"
 }
 
-# ------------------ Add User (with corrected UDP Custom connection string) ------------------
 add_user() {
     echo -e "\n${YLW}Select Protocol:${RST}"
     echo "  1) ZIVPN"
@@ -257,7 +253,6 @@ add_user() {
     esac
 }
 
-# ------------------ Remove User ------------------
 remove_user() {
     echo -e "\n${YLW}Select Protocol:${RST}"
     echo "  1) ZIVPN"
@@ -281,7 +276,6 @@ remove_user() {
     read -p "Press Enter to continue..."
 }
 
-# ------------------ Bot CLI Mode ------------------
 if [[ "$1" == "--bot-"* ]]; then
     cmd="${1#--bot-}"
     shift
@@ -320,7 +314,6 @@ if [[ "$1" == "--bot-"* ]]; then
     exit 0
 fi
 
-# ------------------ Main Loop ------------------
 fetch_geo
 
 while true; do

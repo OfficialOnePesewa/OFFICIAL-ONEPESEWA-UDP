@@ -1,5 +1,5 @@
 #!/bin/bash
-# OFFICIAL ONEPESEWA DUAL PROTOCOL INSTALLER – ZIVPN + UDP Custom
+# OFFICIAL ONEPESEWA DUAL PROTOCOL INSTALLER – Single Command Management
 set -e
 
 G='\e[1;32m' R='\e[1;31m' Y='\e[1;33m' C='\e[1;36m' NC='\e[0m'
@@ -46,7 +46,7 @@ echo "  Admin    : @OfficialOnePesewa"
 echo "---------------------------------------------------"
 
 # ------------------ Install ZIVPN ------------------
-echo -e "${Y}[1/8] Installing ZIVPN...${NC}"
+echo -e "${Y}[1/7] Installing ZIVPN...${NC}"
 ARCH=$(uname -m)
 case $ARCH in
     x86_64|amd64) BIN="amd64" ;;
@@ -95,7 +95,7 @@ WantedBy=multi-user.target
 EOF
 
 # ------------------ Install UDP Custom ------------------
-echo -e "${Y}[2/8] Installing UDP Custom...${NC}"
+echo -e "${Y}[2/7] Installing UDP Custom...${NC}"
 cd /root
 rm -rf udp-custom-2 2>/dev/null
 git clone https://github.com/http-custom/udp-custom udp-custom-2
@@ -103,7 +103,9 @@ cd udp-custom-2
 chmod +x install.sh
 ./install.sh || true
 
-# Ensure UDP Custom service exists and is configured
+# Remove standalone udp command (we use onepesewa for everything)
+rm -f /usr/local/bin/udp
+
 cat > /etc/systemd/system/udp-custom.service << 'EOF'
 [Unit]
 Description=UDP Custom Server
@@ -121,25 +123,25 @@ WantedBy=multi-user.target
 EOF
 
 # ------------------ Firewall Rules ------------------
-echo -e "${Y}[3/8] Configuring firewall...${NC}"
-# ZIVPN
+echo -e "${Y}[3/7] Configuring firewall...${NC}"
 iptables -I INPUT -p udp --dport 5667 -j ACCEPT 2>/dev/null || true
 iptables -I INPUT -p udp --dport 6000:19999 -j ACCEPT 2>/dev/null || true
 iptables -t nat -A PREROUTING -p udp --dport 6000:19999 -j DNAT --to-destination :5667 2>/dev/null || true
-# UDP Custom (default ports)
 iptables -I INPUT -p udp --dport 36712 -j ACCEPT 2>/dev/null || true
 iptables -I INPUT -p udp --dport 7800 -j ACCEPT 2>/dev/null || true
 iptables -I INPUT -p tcp --dport 7800 -j ACCEPT 2>/dev/null || true
-
 netfilter-persistent save 2>/dev/null || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
 
-# ------------------ Install Panel ------------------
-echo -e "${Y}[4/8] Installing OP UDP Panel...${NC}"
+# ------------------ Install Unified Panel ------------------
+echo -e "${Y}[4/7] Installing unified OP UDP Panel...${NC}"
 wget -qO /usr/local/bin/onepesewa https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/onepesewa
 chmod +x /usr/local/bin/onepesewa
 
+# Create alias so 'udp' also opens the panel
+ln -sf /usr/local/bin/onepesewa /usr/local/bin/udp
+
 # ------------------ Telegram Bot ------------------
-echo -e "${Y}[5/8] Setting up Telegram bot...${NC}"
+echo -e "${Y}[5/7] Setting up Telegram bot...${NC}"
 pip3 install --quiet python-telegram-bot==20.3
 wget -qO /usr/local/bin/opudp_bot.py https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/opudp_bot.py
 chmod +x /usr/local/bin/opudp_bot.py
@@ -159,7 +161,7 @@ WantedBy=multi-user.target
 EOF
 
 # ------------------ Enable Services ------------------
-echo -e "${Y}[6/8] Starting services...${NC}"
+echo -e "${Y}[6/7] Starting services...${NC}"
 systemctl daemon-reload
 systemctl enable zivpn udp-custom opudp-bot
 systemctl start zivpn
@@ -176,5 +178,5 @@ echo -e "${G} ISP         :${NC} $ISP"
 echo -e "${G} ZIVPN Port  :${NC} 5667 (NAT 6000-19999)"
 echo -e "${G} UDP Custom  :${NC} 36712 (Gateway 7800)"
 echo -e "${C}====================================================${NC}"
-echo -e "${Y} Type 'onepesewa' to open the control panel.${NC}"
+echo -e "${Y} Type 'onepesewa' (or 'udp') to open the control panel.${NC}"
 echo -e "${C}====================================================${NC}"

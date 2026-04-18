@@ -1,8 +1,5 @@
 #!/bin/bash
-# OFFICIAL ONEPESEWA DUAL PROTOCOL INSTALLER – Fully Autonomous
-# Installs ZIVPN (port 5667) + UDP Custom (random port 50000-55000) without prompts
-# One-liner: bash <(curl -fsSL https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/install.sh)
-
+# OFFICIAL ONEPESEWA DUAL PROTOCOL INSTALLER – Fully Autonomous (Fixed UDP Custom Activation)
 set -e
 
 G='\e[1;32m' R='\e[1;31m' Y='\e[1;33m' C='\e[1;36m' NC='\e[0m'
@@ -99,29 +96,34 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
-# ------------------ Build UDP Custom from Source ------------------
+# ------------------ Build UDP Custom from Source (Robust) ------------------
 echo -e "${Y}[2/6] Building UDP Custom from source...${NC}"
 mkdir -p /root/udp
 cd /root
 
+# Clean any previous build
 rm -rf udp-custom-build
 git clone https://github.com/http-custom/udp-custom udp-custom-build
 cd udp-custom-build
 
-# Build the binary
-if [ -f "Makefile" ]; then
-    make
-    cp udp-custom /root/udp/
-elif [ -f "build.sh" ]; then
-    chmod +x build.sh && ./build.sh
-    cp udp-custom /root/udp/
-else
+# Build with explicit output
+echo -e "${Y}[*] Compiling UDP Custom...${NC}"
+go build -v -o udp-custom . 2>&1 | tail -5
+if [ ! -f udp-custom ]; then
+    echo -e "${R}[✗] Build failed. Trying alternative method...${NC}"
     go build -o udp-custom main.go || go build -o udp-custom .
-    cp udp-custom /root/udp/
 fi
+cp udp-custom /root/udp/
+chmod +x /root/udp/udp-custom
+
+# Verify binary
+if [ ! -x /root/udp/udp-custom ] || [ ! -s /root/udp/udp-custom ]; then
+    echo -e "${R}[✗] UDP Custom binary is invalid.${NC}"
+    exit 1
+fi
+echo -e "${G}[✓] UDP Custom binary built ($(stat -c%s /root/udp/udp-custom) bytes)${NC}"
 
 cd /root
-chmod +x /root/udp/udp-custom
 rm -rf udp-custom-build
 
 # Generate random port between 50000 and 55000
@@ -156,6 +158,8 @@ WorkingDirectory=/root/udp
 ExecStart=/root/udp/udp-custom server --config /root/udp/config.json
 Restart=always
 RestartSec=3
+StandardOutput=journal
+StandardError=journal
 
 [Install]
 WantedBy=multi-user.target
@@ -175,7 +179,7 @@ iptables -I INPUT -p tcp --dport 7800 -j ACCEPT 2>/dev/null || true
 
 netfilter-persistent save 2>/dev/null || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
 
-# ------------------ Install Unified Panel ------------------
+# ------------------ Install Panel ------------------
 echo -e "${Y}[4/6] Installing OP UDP Panel...${NC}"
 for i in 1 2 3; do
     wget -qO /usr/local/bin/onepesewa https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/onepesewa && break
@@ -220,7 +224,8 @@ systemctl enable zivpn udp-custom
 systemctl start zivpn
 systemctl start udp-custom
 
-sleep 3
+# Wait for UDP Custom to fully start
+sleep 5
 
 echo -e "\n${C}====================================================${NC}"
 echo -e "${G}         INSTALLATION COMPLETE!${NC}"
@@ -241,7 +246,7 @@ fi
 if systemctl is-active --quiet udp-custom; then
     echo -e "${G}✅ UDP Custom is running${NC}"
 else
-    echo -e "${R}❌ UDP Custom failed to start.${NC}"
+    echo -e "${R}❌ UDP Custom failed to start. Check: journalctl -u udp-custom --no-pager -n 20${NC}"
 fi
 
 echo -e "${C}====================================================${NC}"

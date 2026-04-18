@@ -1,5 +1,6 @@
 #!/bin/bash
-# OP UDP PANEL – Redesigned Vertical Dashboard with Device Binding
+# OP UDP PANEL – Dual Protocol (ZIVPN + UDP Custom) with Device Binding
+# One unified panel for both ZIVPN and HTTP Custom UDP tunneling
 
 CONFIG="/etc/zivpn/config.json"
 DB="/etc/zivpn/users.db"
@@ -31,20 +32,15 @@ fetch_geo() {
     printf "${DIM}Fetching location...${RST}"
     GEO=$(curl -4 -s --max-time 8 https://ipapi.co/json/ 2>/dev/null)
     if [ -z "$GEO" ] || ! echo "$GEO" | grep -q '"ip"'; then
-        IP="N/A"; CITY="Unknown"; COUNTRY="Unknown"; ISP="Unknown"; ZIP=""; COUNTRY_CODE=""
+        IP="N/A"; CITY="Unknown"; COUNTRY="Unknown"; ISP="Unknown"; COUNTRY_CODE=""
     else
         IP=$(echo "$GEO" | grep -oP '"ip":\s*"\K[^"]+')
         CITY=$(echo "$GEO" | grep -oP '"city":\s*"\K[^"]+')
         COUNTRY=$(echo "$GEO" | grep -oP '"country_name":\s*"\K[^"]+')
         COUNTRY_CODE=$(echo "$GEO" | grep -oP '"country_code":\s*"\K[^"]+' | tr '[:upper:]' '[:lower:]')
-        ZIP=$(echo "$GEO" | grep -oP '"postal":\s*"\K[^"]+')
         ISP=$(echo "$GEO" | grep -oP '"org":\s*"\K[^"]+')
-        [ -z "$IP" ] && IP="N/A"
-        [ -z "$CITY" ] && CITY="Unknown"
-        [ -z "$COUNTRY" ] && COUNTRY="Unknown"
-        [ -z "$ISP" ] && ISP="Unknown"
     fi
-    echo "IP=\"$IP\"; CITY=\"$CITY\"; COUNTRY=\"$COUNTRY\"; COUNTRY_CODE=\"$COUNTRY_CODE\"; ZIP=\"$ZIP\"; ISP=\"$ISP\"" > "$CACHE_FILE"
+    echo "IP=\"$IP\"; CITY=\"$CITY\"; COUNTRY=\"$COUNTRY\"; COUNTRY_CODE=\"$COUNTRY_CODE\"; ISP=\"$ISP\"" > "$CACHE_FILE"
     printf "\r\033[K"
 }
 
@@ -66,78 +62,61 @@ get_sysinfo() {
     UPTIME=$(uptime -p | sed 's/up //; s/ days/d/; s/ day/d/; s/ hours/h/; s/ hour/h/; s/ minutes/m/; s/ minute/m/')
     [ -z "$UPTIME" ] && UPTIME="N/A"
     if systemctl is-active --quiet zivpn; then
-        STATUS="${GRN}🟢 active${RST}"
+        ZSTATUS="${GRN}🟢 active${RST}"
     else
-        STATUS="${RED}🔴 inactive${RST}"
+        ZSTATUS="${RED}🔴 inactive${RST}"
     fi
-    USER_COUNT=$(jq '.auth.config | length' "$CONFIG" 2>/dev/null || echo "0")
+    if systemctl is-active --quiet udp-custom; then
+        USTATUS="${GRN}🟢 active${RST}"
+    else
+        USTATUS="${RED}🔴 inactive${RST}"
+    fi
+    ZUSER_COUNT=$(jq '.auth.config | length' "$CONFIG" 2>/dev/null || echo "0")
+    UUSER_COUNT=$(cat /etc/passwd 2>/dev/null | grep -c "^udp_" || echo "0")
     DATE_TIME=$(TZ="Africa/Accra" date +"%A, %d %B %Y  %I:%M:%S %p %Z")
     FLAG=$(flag "$COUNTRY_CODE")
     [ -n "$FLAG" ] && LOC_STR="${FLAG}  $CITY, $COUNTRY" || LOC_STR="$CITY, $COUNTRY"
 }
 
-# ------------------ Beautiful Dashboard ------------------
-print_header() {
+# ------------------ Dashboard ------------------
+print_banner() {
     clear
+    get_sysinfo
     echo -e "${WHT}┌─────────────────────────────────────────────────────────────────────────────┐${RST}"
-    echo -e "${WHT}│${RST}                                                                             ${WHT}│${RST}"
     echo -e "${WHT}│${RST}   ${RED}██████╗ ${GRN}██████╗     ${YLW}██╗   ██╗${BLU}██████╗ ${MAG}██████╗     ${CYN}██████╗  ${RED}█████╗ ${GRN}███╗   ██╗${YLW}███████╗${BLU}██╗${RST}   ${WHT}│${RST}"
     echo -e "${WHT}│${RST}  ${RED}██╔═══██╗${GRN}██╔══██╗    ${YLW}██║   ██║${BLU}██╔══██╗${MAG}██╔══██╗    ${CYN}██╔══██╗${RED}██╔══██╗${GRN}████╗  ██║${YLW}██╔════╝${BLU}██║${RST}   ${WHT}│${RST}"
     echo -e "${WHT}│${RST}  ${RED}██║   ██║${GRN}██████╔╝    ${YLW}██║   ██║${BLU}██║  ██║${MAG}██████╔╝    ${CYN}██████╔╝${RED}███████║${GRN}██╔██╗ ██║${YLW}█████╗  ${BLU}██║${RST}   ${WHT}│${RST}"
     echo -e "${WHT}│${RST}  ${RED}██║   ██║${GRN}██╔═══╝     ${YLW}██║   ██║${BLU}██║  ██║${MAG}██╔═══╝     ${CYN}██╔═══╝ ${RED}██╔══██║${GRN}██║╚██╗██║${YLW}██╔══╝  ${BLU}██║${RST}   ${WHT}│${RST}"
     echo -e "${WHT}│${RST}  ${RED}╚██████╔╝${GRN}██║         ${YLW}╚██████╔╝${BLU}██████╔╝${MAG}██║         ${CYN}██║     ${RED}██║  ██║${GRN}██║ ╚████║${YLW}███████╗${BLU}███████╗${RST}${WHT}│${RST}"
     echo -e "${WHT}│${RST}   ${RED}╚═════╝ ${GRN}╚═╝          ${YLW}╚═════╝ ${BLU}╚═════╝ ${MAG}╚═╝         ${CYN}╚═╝     ${RED}╚═╝  ╚═╝${GRN}╚═╝  ╚═══╝${YLW}╚══════╝${BLU}╚══════╝${RST}${WHT}│${RST}"
-    echo -e "${WHT}│${RST}                                                                             ${WHT}│${RST}"
-    echo -e "${WHT}│${RST}                        ${CYN}Professional UDP Tunnel Management${RST}                        ${WHT}│${RST}"
+    echo -e "${WHT}│${RST}                        ${CYN}Dual Protocol UDP Management${RST}                          ${WHT}│${RST}"
     echo -e "${WHT}├─────────────────────────────────────────────────────────────────────────────┤${RST}"
-}
-
-print_info() {
-    echo -e "${WHT}│${RST}                                                                             ${WHT}│${RST}"
     echo -e "${WHT}│${RST}  ${BOLD}🕐  $DATE_TIME${RST}                                                               ${WHT}│${RST}"
-    echo -e "${WHT}│${RST}                                                                             ${WHT}│${RST}"
-    echo -e "${WHT}│${RST}  ${CYN}🌐 IP Address  :${RST} $IP"
-    echo -e "${WHT}│${RST}  ${YLW}📍 Location    :${RST} $LOC_STR"
-    [ -n "$ZIP" ] && echo -e "${WHT}│${RST}  ${MAG}📮 ZIP         :${RST} $ZIP"
-    echo -e "${WHT}│${RST}  ${BLU}🏢 ISP         :${RST} $ISP"
-    echo -e "${WHT}│${RST}  ${GRN}💻 OS          :${RST} $OS_FULL"
-    echo -e "${WHT}│${RST}  ${YLW}⏱️  Uptime      :${RST} $UPTIME"
-    echo -e "${WHT}│${RST}  ${GRN}📡 Service     :${RST} $STATUS"
-    echo -e "${WHT}│${RST}  ${CYN}👥 Active Users:${RST} $USER_COUNT"
-    echo -e "${WHT}│${RST}  ${MAG}🎯 UDP Ports   :${RST} $PORT_START → $PORT_END"
-    echo -e "${WHT}│${RST}                                                                             ${WHT}│${RST}"
+    echo -e "${WHT}│${RST}  ${CYN}🌐 IP       :${RST} $IP                                                              ${WHT}│${RST}"
+    echo -e "${WHT}│${RST}  ${YLW}📍 Location :${RST} $LOC_STR                                                          ${WHT}│${RST}"
+    echo -e "${WHT}│${RST}  ${BLU}🏢 ISP      :${RST} $ISP                                                              ${WHT}│${RST}"
+    echo -e "${WHT}│${RST}  ${GRN}💻 OS       :${RST} $OS_FULL                                                          ${WHT}│${RST}"
+    echo -e "${WHT}│${RST}  ${YLW}⏱️  Uptime   :${RST} $UPTIME                                                           ${WHT}│${RST}"
+    echo -e "${WHT}│${RST}  ${GRN}📡 ZIVPN    :${RST} $ZSTATUS  👥 $ZUSER_COUNT users  🎯 Port: 5667 (NAT 6000-19999)     ${WHT}│${RST}"
+    echo -e "${WHT}│${RST}  ${MAG}🔧 UDP Custom:${RST} $USTATUS  👥 $UUSER_COUNT users  🎯 Port: 36712                      ${WHT}│${RST}"
     echo -e "${WHT}├─────────────────────────────────────────────────────────────────────────────┤${RST}"
-}
-
-print_menu() {
-    echo -e "${WHT}│${RST}                                                                             ${WHT}│${RST}"
     echo -e "${WHT}│${RST}  ${BOLD}📌 MAIN MENU${RST}                                                               ${WHT}│${RST}"
-    echo -e "${WHT}│${RST}                                                                             ${WHT}│${RST}"
-    echo -e "${WHT}│${RST}    ${GRN}1)${RST}  ▶  Start Service           ${GRN}6)${RST}  ➕  Add New User                  ${WHT}│${RST}"
-    echo -e "${WHT}│${RST}    ${GRN}2)${RST}  ⏹  Stop Service            ${GRN}7)${RST}  ➖  Remove User                   ${WHT}│${RST}"
-    echo -e "${WHT}│${RST}    ${GRN}3)${RST}  🔄 Restart Service         ${GRN}8)${RST}  🔁  Renew User                    ${WHT}│${RST}"
-    echo -e "${WHT}│${RST}    ${GRN}4)${RST}  ℹ️  Service Status          ${GRN}9)${RST}  🧹  Cleanup Expired               ${WHT}│${RST}"
-    echo -e "${WHT}│${RST}    ${GRN}5)${RST}  📋 List All Users         ${GRN}10)${RST}  📊  Usage Statistics              ${WHT}│${RST}"
-    echo -e "${WHT}│${RST}                                                                             ${WHT}│${RST}"
-    echo -e "${WHT}│${RST}   ${GRN}11)${RST}  ⏳ Bandwidth + Expiry     ${GRN}12)${RST}  🔃  Reset Bandwidth               ${WHT}│${RST}"
-    echo -e "${WHT}│${RST}   ${GRN}13)${RST}  ⚡ Speed Test             ${GRN}14)${RST}  📜  Live Logs                     ${WHT}│${RST}"
-    echo -e "${WHT}│${RST}   ${GRN}15)${RST}  💾 Backup Data            ${GRN}16)${RST}  ♻️  Restore Backup                 ${WHT}│${RST}"
-    echo -e "${WHT}│${RST}   ${GRN}17)${RST}  🔧 Change Port Range      ${GRN}18)${RST}  ⬆️  Update Panel                   ${WHT}│${RST}"
-    echo -e "${WHT}│${RST}   ${GRN}19)${RST}  🔌 Connection Limit       ${GRN}20)${RST}  🧪  Trial User                    ${WHT}│${RST}"
-    echo -e "${WHT}│${RST}                                                                             ${WHT}│${RST}"
-    echo -e "${WHT}│${RST}   ${GRN}21)${RST}  👤 User Information       ${GRN}22)${RST}  🤖 Telegram Setup                ${WHT}│${RST}"
-    echo -e "${WHT}│${RST}   ${GRN}23)${RST}  👑 Add Admin              ${GRN}24)${RST}  📄 List Admins                   ${WHT}│${RST}"
-    echo -e "${WHT}│${RST}                                                                             ${WHT}│${RST}"
+    echo -e "${WHT}│${RST}    ${GRN}1)${RST} ▶  Start Services        ${GRN}6)${RST} ➕  Add New User                  ${WHT}│${RST}"
+    echo -e "${WHT}│${RST}    ${GRN}2)${RST} ⏹  Stop Services         ${GRN}7)${RST} ➖  Remove User                   ${WHT}│${RST}"
+    echo -e "${WHT}│${RST}    ${GRN}3)${RST} 🔄 Restart Services      ${GRN}8)${RST} 🔁  Renew User                    ${WHT}│${RST}"
+    echo -e "${WHT}│${RST}    ${GRN}4)${RST} ℹ️  Service Status       ${GRN}9)${RST} 🧹  Cleanup Expired               ${WHT}│${RST}"
+    echo -e "${WHT}│${RST}    ${GRN}5)${RST} 📋 List All Users       ${GRN}10)${RST} 📊  Usage Statistics              ${WHT}│${RST}"
+    echo -e "${WHT}│${RST}   ${GRN}11)${RST} ⚡ Speed Test           ${GRN}12)${RST} 📜  Live Logs                     ${WHT}│${RST}"
+    echo -e "${WHT}│${RST}   ${GRN}13)${RST} 💾 Backup Data          ${GRN}14)${RST} ♻️  Restore Backup                 ${WHT}│${RST}"
+    echo -e "${WHT}│${RST}   ${GRN}15)${RST} ⬆️  Update Panel         ${GRN}16)${RST} 🧪  Trial User                    ${WHT}│${RST}"
+    echo -e "${WHT}│${RST}   ${GRN}17)${RST} 👤 User Information     ${GRN}18)${RST} 🤖 Telegram Setup                ${WHT}│${RST}"
     echo -e "${WHT}├─────────────────────────────────────────────────────────────────────────────┤${RST}"
-    echo -e "${WHT}│${RST}                                                                             ${WHT}│${RST}"
-    echo -e "${WHT}│${RST}  ${RED}99)${RST}  💣 UNINSTALL                                                         ${WHT}│${RST}"
-    echo -e "${WHT}│${RST}   ${GRN}0)${RST}  🚪 Exit                                                               ${WHT}│${RST}"
-    echo -e "${WHT}│${RST}                                                                             ${WHT}│${RST}"
+    echo -e "${WHT}│${RST}  ${RED}99) UNINSTALL${RST}                                                          ${GRN}0) Exit${RST}  ${WHT}│${RST}"
     echo -e "${WHT}└─────────────────────────────────────────────────────────────────────────────┘${RST}"
     echo ""
 }
 
-# ------------------ Helper Functions ------------------
+# ------------------ Helpers ------------------
 find_free_port() {
     local port=$PORT_START
     while [ $port -le $PORT_END ]; do
@@ -145,21 +124,6 @@ find_free_port() {
         port=$((port+1))
     done
     echo ""
-}
-
-quota_to_bytes() {
-    local q=$(echo "$1" | tr '[:upper:]' '[:lower:]')
-    if [[ "$q" =~ ^([0-9.]+)gb$ ]]; then echo "${BASH_REMATCH[1]} * 1073741824" | bc | cut -d. -f1
-    elif [[ "$q" =~ ^([0-9.]+)mb$ ]]; then echo "${BASH_REMATCH[1]} * 1048576" | bc | cut -d. -f1
-    else echo "0"; fi
-}
-
-format_bytes() {
-    local b=$1
-    if [ $b -ge 1073741824 ]; then echo "$(echo "scale=2; $b/1073741824" | bc) GB"
-    elif [ $b -ge 1048576 ]; then echo "$(echo "scale=2; $b/1048576" | bc) MB"
-    elif [ $b -ge 1024 ]; then echo "$(echo "scale=2; $b/1024" | bc) KB"
-    else echo "$b B"; fi
 }
 
 setup_tracking() {
@@ -181,10 +145,25 @@ remove_tracking() {
     iptables -t nat -D PREROUTING -p udp --dport $port -j DNAT --to-destination :5667 2>/dev/null
 }
 
-# ------------------ User Management with Device Binding ------------------
+quota_to_bytes() {
+    local q=$(echo "$1" | tr '[:upper:]' '[:lower:]')
+    if [[ "$q" =~ ^([0-9.]+)gb$ ]]; then echo "${BASH_REMATCH[1]} * 1073741824" | bc | cut -d. -f1
+    elif [[ "$q" =~ ^([0-9.]+)mb$ ]]; then echo "${BASH_REMATCH[1]} * 1048576" | bc | cut -d. -f1
+    else echo "0"; fi
+}
+
+format_bytes() {
+    local b=$1
+    if [ $b -ge 1073741824 ]; then echo "$(echo "scale=2; $b/1073741824" | bc) GB"
+    elif [ $b -ge 1048576 ]; then echo "$(echo "scale=2; $b/1048576" | bc) MB"
+    elif [ $b -ge 1024 ]; then echo "$(echo "scale=2; $b/1024" | bc) KB"
+    else echo "$b B"; fi
+}
+
+# ------------------ User Management ------------------
 add_user_core() {
     local basepass="$1" days="$2" quota="$3" devid="$4"
-    # Device binding: if devid provided, final password is basepass_devid
+    # Device binding for ZIVPN
     if [ -n "$devid" ] && [ "$devid" != "None" ]; then
         finalpass="${basepass}_${devid}"
     else
@@ -195,34 +174,155 @@ add_user_core() {
     startdate=$(date +%Y-%m-%d)
     port=$(find_free_port)
     [ -z "$port" ] && { echo "ERROR: No free ports"; return 1; }
-    # Add to ZIVPN config
+
+    # ZIVPN
     jq --arg p "$finalpass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
     echo "$finalpass|$exp|$quota|$port|$devid|$startdate" >> "$DB"
     echo "$finalpass|0" >> "$USAGE_DB"
     setup_tracking "$port"
     systemctl restart zivpn 2>/dev/null
-    echo "SUCCESS|$finalpass|$exp|$port|$quota"
+
+    # UDP Custom
+    udp_username="udp_${basepass:0:8}"
+    udp_password="$basepass"
+    useradd -M -s /bin/false -e "$exp" "$udp_username" 2>/dev/null
+    echo "$udp_username:$udp_password" | chpasswd
+
+    echo "SUCCESS|$finalpass|$exp|$port|$quota|$udp_username|$udp_password"
 }
 
-# ------------------ Bot CLI Mode ------------------
-if [[ "$1" == "--bot-"* ]]; then
-    cmd="${1#--bot-}"
-    shift
-    case "$cmd" in
-        status)
-            fetch_geo; get_sysinfo
-            echo "🖥 <b>Server Status</b>%0A🌐 IP: $IP%0A📍 Location: $LOC_STR%0A🏢 ISP: $ISP%0A💻 OS: $OS_FULL%0A⚡ Service: $(systemctl is-active zivpn)%0A⏱ Uptime: $UPTIME%0A👥 Users: $USER_COUNT"
-            ;;
-        adduser) result=$(add_user_core "$1" "$2" "$3" "$4"); echo "$result" ;;
-        removeuser) pass="$1"; port=$(grep "^$pass|" "$DB" | cut -d'|' -f4); [ -n "$port" ] && remove_tracking "$port"; jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"; sed -i "/^$pass|/d" "$DB" "$USAGE_DB"; systemctl restart zivpn 2>/dev/null; echo "✅ User removed." ;;
-        renew) pass="$1"; days="$2"; oldexp=$(grep "^$pass|" "$DB" | cut -d'|' -f2); newexp=$(date -d "$oldexp +$days days" +%Y-%m-%d); sed -i "s|^$pass|$oldexp|$pass|$newexp|" "$DB"; echo "✅ Expiry extended to $newexp" ;;
-        resetbw) pass="$1"; port=$(grep "^$pass|" "$DB" | cut -d'|' -f4); iptables -Z UDP_IN_$port 2>/dev/null; iptables -Z UDP_OUT_$port 2>/dev/null; sed -i "s|^$pass|.*|$pass|0|" "$USAGE_DB"; echo "✅ Bandwidth reset." ;;
-        userinfo) pass="$1"; user_data=$(grep "^$pass|" "$DB"); IFS='|' read -r p expiry quota port dev start <<< "$user_data"; used=$(grep "^$pass|" "$USAGE_DB" | cut -d'|' -f2); used=${used:-0}; quota_bytes=$(quota_to_bytes "$quota"); remain=$((quota_bytes - used)); days_left=$(( ($(date -d "$expiry" +%s) - $(date +%s)) / 86400 )); echo "🔍 <b>${pass:0:20}</b>%0A📅 Expiry: $expiry ($days_left days)%0A📊 Quota: $quota%0A📈 Used: $(format_bytes $used)%0A📉 Remain: $(format_bytes $remain)%0A📱 Device: $dev%0A🔌 Port: $port" ;;
-        cleanup) today=$(date +%Y-%m-%d); while IFS='|' read -r pass expiry quota port dev start; do [[ "$expiry" < "$today" ]] && { [ -n "$port" ] && remove_tracking "$port"; jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"; sed -i "/^$pass|/d" "$DB" "$USAGE_DB"; }; done < "$DB"; systemctl restart zivpn 2>/dev/null; echo "✅ Cleanup done." ;;
-        *) echo "Unknown bot command"; exit 1 ;;
-    esac
-    exit 0
-fi
+add_user() {
+    echo -e "\n${YLW}╭────────────────── CREATE NEW USER ──────────────────╮${RST}"
+    read -p "$(echo -e "${GRN}Base Password  : ${RST}")" basepass
+    read -p "$(echo -e "${GRN}Validity (Days): ${RST}")" days
+    read -p "$(echo -e "${GRN}Quota (GB/MB)  : ${RST}")" quota
+    read -p "$(echo -e "${GRN}Device ID      : ${RST}")" devid
+    echo -e "${YLW}╰──────────────────────────────────────────────────────╯${RST}"
+
+    result=$(add_user_core "$basepass" "$days" "$quota" "$devid")
+    if [[ "$result" == SUCCESS* ]]; then
+        IFS='|' read -r s finalpass exp port quota udp_user udp_pass <<< "$result"
+        fetch_geo
+        echo -e "\n${CYN}╭──────────────────────────────────────────────────────╮${RST}"
+        echo -e "${CYN}│  ${GRN}${BOLD}🎉 NEW USER CREATED SUCCESSFULLY 🎉${RST}${CYN}                 │${RST}"
+        echo -e "${CYN}├──────────────────────────────────────────────────────┤${RST}"
+        echo -e "${CYN}│${RST} ${YLW}📱 ZIVPN Configuration${RST}"
+        echo -e "${CYN}│${RST}    ${WHT}Password: $finalpass${RST}"
+        echo -e "${CYN}│${RST}"
+        echo -e "${CYN}│${RST} ${MAG}🔧 UDP Custom Configuration (HTTP Custom App)${RST}"
+        echo -e "${CYN}│${RST}    ${WHT}Config: $IP:1-65535@$udp_user:$udp_pass${RST}"
+        echo -e "${CYN}│${RST}"
+        echo -e "${CYN}│${RST} ${YLW}⏳ Expiry: $exp ($days Days)  📊 Quota: $quota${RST}"
+        echo -e "${CYN}│${RST} ${MAG}🌍 Server: $IP ($CITY, $COUNTRY)${RST}"
+        echo -e "${CYN}╰──────────────────────────────────────────────────────╯${RST}\n"
+    else
+        echo -e "${RED}$result${RST}"
+    fi
+    read -p "Press Enter to continue..."
+}
+
+remove_user() {
+    read -p "$(echo -e "${GRN}ZIVPN Password to remove: ${RST}")" pass
+    port=$(grep "^$pass|" "$DB" 2>/dev/null | cut -d'|' -f4)
+    [ -n "$port" ] && remove_tracking "$port"
+    jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
+    sed -i "/^$pass|/d" "$DB" "$USAGE_DB" 2>/dev/null
+    systemctl restart zivpn 2>/dev/null
+
+    # Also remove corresponding UDP Custom user (if exists)
+    basepass=$(echo "$pass" | cut -d'_' -f1)
+    udp_username="udp_${basepass:0:8}"
+    userdel "$udp_username" 2>/dev/null
+    echo -e "${GRN}User removed.${RST}"
+    read -p "Press Enter to continue..."
+}
+
+renew_user() {
+    read -p "$(echo -e "${GRN}ZIVPN Password to renew: ${RST}")" pass
+    if ! grep -q "^$pass|" "$DB"; then echo -e "${RED}User not found.${RST}"; read -p "Press Enter..."; return; fi
+    read -p "$(echo -e "${GRN}Extend by days: ${RST}")" days
+    oldexp=$(grep "^$pass|" "$DB" | cut -d'|' -f2)
+    newexp=$(date -d "$oldexp +$days days" +%Y-%m-%d 2>/dev/null || echo "$oldexp")
+    sed -i "s|^$pass|$oldexp|$pass|$newexp|" "$DB"
+    # Renew UDP Custom user
+    basepass=$(echo "$pass" | cut -d'_' -f1)
+    udp_username="udp_${basepass:0:8}"
+    usermod -e "$newexp" "$udp_username" 2>/dev/null
+    echo -e "${GRN}Expiry extended to $newexp.${RST}"
+    read -p "Press Enter to continue..."
+}
+
+cleanup_expired() {
+    today=$(date +%Y-%m-%d)
+    while IFS='|' read -r pass expiry quota port dev start; do
+        if [[ "$expiry" < "$today" ]]; then
+            [ -n "$port" ] && remove_tracking "$port"
+            jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
+            sed -i "/^$pass|/d" "$DB" "$USAGE_DB"
+            basepass=$(echo "$pass" | cut -d'_' -f1)
+            udp_username="udp_${basepass:0:8}"
+            userdel "$udp_username" 2>/dev/null
+            echo "Removed expired: $pass"
+        fi
+    done < "$DB"
+    systemctl restart zivpn 2>/dev/null
+    echo -e "${GRN}Cleanup completed.${RST}"
+    read -p "Press Enter to continue..."
+}
+
+list_users() {
+    echo -e "\n${CYN}─── ZIVPN Users ───${RST}"
+    if [ -s "$DB" ]; then
+        column -t -s "|" "$DB"
+    else
+        echo "No ZIVPN users."
+    fi
+    echo -e "\n${CYN}─── UDP Custom Users ───${RST}"
+    cat /etc/passwd | grep "^udp_" | cut -d: -f1 | while read u; do
+        exp=$(chage -l "$u" 2>/dev/null | grep "Account expires" | cut -d: -f2- | xargs)
+        echo "$u | Expires: ${exp:-Never}"
+    done
+    read -p "Press Enter to continue..."
+}
+
+show_usage() {
+    update_usage_db
+    echo -e "\n${CYN}Password | Used / Quota | Port | Expiry${RST}"
+    while IFS='|' read -r pass expiry quota port dev start; do
+        used=$(grep "^$pass|" "$USAGE_DB" | cut -d'|' -f2)
+        used=${used:-0}
+        echo "$pass | $(format_bytes $used) / $quota | $port | $expiry"
+    done < "$DB"
+    read -p "Press Enter to continue..."
+}
+
+user_info() {
+    read -p "$(echo -e "${GRN}Enter ZIVPN password: ${RST}")" pass
+    user_data=$(grep "^$pass|" "$DB")
+    [ -z "$user_data" ] && { echo -e "${RED}Not found.${RST}"; read -p "Enter..."; return; }
+    IFS='|' read -r p expiry quota port dev start <<< "$user_data"
+    used=$(grep "^$pass|" "$USAGE_DB" | cut -d'|' -f2); used=${used:-0}
+    quota_bytes=$(quota_to_bytes "$quota")
+    remain=$((quota_bytes - used)); [ $remain -lt 0 ] && remain=0
+    days_left=$(( ($(date -d "$expiry" +%s) - $(date +%s)) / 86400 ))
+    basepass=$(echo "$pass" | cut -d'_' -f1)
+    udp_username="udp_${basepass:0:8}"
+    echo -e "\n${CYN}User: ${WHT}$pass${RST}"
+    echo -e "Expiry: $expiry ($days_left days)"
+    echo -e "Quota: $quota | Used: $(format_bytes $used) | Remain: $(format_bytes $remain)"
+    echo -e "Device ID: $dev"
+    echo -e "UDP Custom user: $udp_username"
+    read -p "Press Enter to continue..."
+}
+
+trial_user() {
+    read -p "Minutes (1-60): " mins
+    pass="trial_$(openssl rand -hex 2)"
+    add_user_core "$pass" 1 "100MB" "trial" >/dev/null
+    echo -e "${GRN}Trial created: $pass (expires in $mins mins)${RST}"
+    ( sleep $((mins*60)); /usr/local/bin/onepesewa --bot-removeuser "$pass" ) &
+    read -p "Press Enter..."
+}
 
 # ------------------ Usage Daemon ------------------
 update_usage_db() {
@@ -233,7 +333,6 @@ update_usage_db() {
         total=$(( ${in_bytes:-0} + ${out_bytes:-0} ))
         grep -v "^$pass|" "$USAGE_DB" > /tmp/usage_tmp
         echo "$pass|$total" >> /tmp/usage_tmp; mv /tmp/usage_tmp "$USAGE_DB"
-        # Quota enforcement
         quota_bytes=$(quota_to_bytes "$quota")
         if [ $quota_bytes -gt 0 ] && [ $total -ge $quota_bytes ] && ! grep -q "^$pass|.*PAUSED" "$DB"; then
             sed -i "s|^$pass|$pass [PAUSED]|" "$DB"
@@ -249,73 +348,48 @@ start_usage_daemon() {
     echo $! > "$DAEMON_PID_FILE"
 }
 
+# ------------------ Bot CLI ------------------
+if [[ "$1" == "--bot-"* ]]; then
+    cmd="${1#--bot-}"; shift
+    case "$cmd" in
+        adduser) add_user_core "$1" "$2" "$3" "$4" ;;
+        removeuser) pass="$1"; port=$(grep "^$pass|" "$DB" | cut -d'|' -f4); [ -n "$port" ] && remove_tracking "$port"; jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"; sed -i "/^$pass|/d" "$DB" "$USAGE_DB"; systemctl restart zivpn; basepass=$(echo "$pass" | cut -d'_' -f1); userdel "udp_${basepass:0:8}" 2>/dev/null; echo "✅ User removed." ;;
+        renew) pass="$1"; days="$2"; oldexp=$(grep "^$pass|" "$DB" | cut -d'|' -f2); newexp=$(date -d "$oldexp +$days days" +%Y-%m-%d); sed -i "s|^$pass|$oldexp|$pass|$newexp|" "$DB"; basepass=$(echo "$pass" | cut -d'_' -f1); usermod -e "$newexp" "udp_${basepass:0:8}" 2>/dev/null; echo "✅ Expiry extended to $newexp" ;;
+        cleanup) cleanup_expired >/dev/null; echo "✅ Cleanup done." ;;
+        *) echo "Unknown bot command"; exit 1 ;;
+    esac
+    exit 0
+fi
+
+# ------------------ Main ------------------
 if [ "$1" = "--update-usage" ]; then update_usage_db; exit 0; fi
 
-# ------------------ Interactive Menu Functions ------------------
-add_user() {
-    echo -e "\n${YLW}╭────────────────── CREATE NEW USER ──────────────────╮${RST}"
-    read -p "$(echo -e "${GRN}Base Password  : ${RST}")" basepass
-    read -p "$(echo -e "${GRN}Validity (Days): ${RST}")" days
-    read -p "$(echo -e "${GRN}Quota (GB/MB)  : ${RST}")" quota
-    read -p "$(echo -e "${GRN}Device ID      : ${RST}")" devid
-    echo -e "${YLW}╰──────────────────────────────────────────────────────╯${RST}"
-    result=$(add_user_core "$basepass" "$days" "$quota" "$devid")
-    if [[ "$result" == SUCCESS* ]]; then
-        IFS='|' read -r s finalpass exp port quota <<< "$result"
-        fetch_geo; get_sysinfo
-        echo -e "\n${CYN}╭──────────────────────────────────────────────────────╮${RST}"
-        echo -e "${CYN}│  ${GRN}${BOLD}🎉 NEW USER CREATED SUCCESSFULLY 🎉${RST}${CYN}                 │${RST}"
-        echo -e "${CYN}├──────────────────────────────────────────────────────┤${RST}"
-        echo -e "${CYN}│${RST} ${YLW}🔑 UDP Password :${RST} ${WHT}$finalpass${RST}"
-        echo -e "${CYN}│${RST}   ${DIM}(Copy the entire string above)${RST}"
-        echo -e "${CYN}│${RST} ${YLW}📡 Assigned Port:${RST} ${WHT}$port${RST}"
-        echo -e "${CYN}│${RST} ${YLW}⏳ Expiry       :${RST} ${WHT}$exp ($days Days)${RST}"
-        echo -e "${CYN}│${RST} ${YLW}📊 Quota        :${RST} ${WHT}$quota${RST}"
-        echo -e "${CYN}│${RST} ${YLW}📱 Device ID    :${RST} ${WHT}${devid:-None}${RST}"
-        echo -e "${CYN}├──────────────────────────────────────────────────────┤${RST}"
-        echo -e "${CYN}│${RST} ${MAG}🌍 Server IP    :${RST} ${WHT}$IP${RST}"
-        echo -e "${CYN}│${RST} ${MAG}📍 Location     :${RST} ${WHT}$CITY, $COUNTRY${RST}"
-        echo -e "${CYN}│${RST} ${MAG}🏢 ISP          :${RST} ${WHT}$ISP${RST}"
-        echo -e "${CYN}├──────────────────────────────────────────────────────┤${RST}"
-        echo -e "${CYN}│${RST} ${YLW}💝 Support VPS Hosting${RST}                             ${CYN}│${RST}"
-        echo -e "${CYN}│${RST} ${WHT}   Donate via Telecel Cash: 0502013764${RST}            ${CYN}│${RST}"
-        echo -e "${CYN}│${RST} ${DIM}   Any amount accepted – Thank you! 🙏${RST}              ${CYN}│${RST}"
-        echo -e "${CYN}╰──────────────────────────────────────────────────────╯${RST}\n"
-    else
-        echo -e "${RED}$result${RST}"
-    fi
-    read -p "Press Enter to continue..."
-}
-
-# ------------------ Main Loop ------------------
 fetch_geo
 start_usage_daemon
 
 while true; do
-    get_sysinfo
-    print_header
-    print_info
-    print_menu
-    read -p "$(echo -e "${CYN}Enter your choice [0-99]: ${RST}")" opt
+    print_banner
+    read -p "$(echo -e "${CYN}Enter choice [0-99]: ${RST}")" opt
     case $opt in
-        1) systemctl start zivpn; echo -e "${GRN}Started.${RST}"; read -p "Press Enter..." ;;
-        2) systemctl stop zivpn; echo -e "${RED}Stopped.${RST}"; read -p "Press Enter..." ;;
-        3) systemctl restart zivpn; echo -e "${GRN}Restarted.${RST}"; read -p "Press Enter..." ;;
-        4) systemctl status zivpn; read -p "Press Enter..." ;;
-        5) column -t -s "|" "$DB"; read -p "Press Enter..." ;;
+        1) systemctl start zivpn udp-custom; echo -e "${GRN}Services started.${RST}"; read -p "Press Enter..." ;;
+        2) systemctl stop zivpn udp-custom; echo -e "${RED}Services stopped.${RST}"; read -p "Press Enter..." ;;
+        3) systemctl restart zivpn udp-custom; echo -e "${GRN}Services restarted.${RST}"; read -p "Press Enter..." ;;
+        4) systemctl status zivpn udp-custom; read -p "Press Enter..." ;;
+        5) list_users ;;
         6) add_user ;;
-        7) read -p "Password to remove: " p; /usr/local/bin/onepesewa --bot-removeuser "$p"; read -p "Press Enter..." ;;
-        8) read -p "Password: " p; read -p "Days: " d; /usr/local/bin/onepesewa --bot-renew "$p" "$d"; read -p "Press Enter..." ;;
-        9) /usr/local/bin/onepesewa --bot-cleanup; read -p "Press Enter..." ;;
-        10) update_usage_db; echo -e "\n${CYN}Password | Used/Quota | Port | Expiry${RST}"; while IFS='|' read -r p exp q port dev start; do used=$(grep "^$p|" "$USAGE_DB" | cut -d'|' -f2); echo "$p | $(format_bytes ${used:-0}) / $q | $port | $exp"; done < "$DB"; read -p "Press Enter..." ;;
-        11|12|13|14|15|16|17|19) echo "Coming soon."; read -p "Press Enter..." ;;
-        18) wget -qO /usr/local/bin/onepesewa https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/onepesewa && chmod +x /usr/local/bin/onepesewa && echo "Updated. Restarting..."; sleep 2; exec onepesewa ;;
-        20) read -p "Minutes: " m; pass="trial_$(openssl rand -hex 2)"; add_user_core "$pass" 1 "100MB" "trial" >/dev/null; echo "Trial: $pass"; (sleep $((m*60)); /usr/local/bin/onepesewa --bot-removeuser "$pass") & read -p "Press Enter..." ;;
-        21) read -p "Password: " p; /usr/local/bin/onepesewa --bot-userinfo "$p"; read -p "Press Enter..." ;;
-        22) read -p "Bot Token: " t; echo "$t" > /etc/zivpn/telegram_token; systemctl enable opudp-bot 2>/dev/null; systemctl restart opudp-bot 2>/dev/null; echo "Bot configured."; read -p "Press Enter..." ;;
-        23) read -p "Chat ID: " id; read -p "Name: " n; echo "$id|admin|$n" >> "$ADMINS_DB"; echo "Admin added."; read -p "Press Enter..." ;;
-        24) cat "$ADMINS_DB"; read -p "Press Enter..." ;;
-        99) systemctl stop zivpn; rm -rf /etc/zivpn /usr/local/bin/zivpn /usr/local/bin/onepesewa; echo "Uninstalled."; exit ;;
+        7) remove_user ;;
+        8) renew_user ;;
+        9) cleanup_expired ;;
+        10) show_usage ;;
+        11) speedtest-cli --simple; read -p "Press Enter..." ;;
+        12) journalctl -u zivpn -u udp-custom -f ;;
+        13) mkdir -p /root/opudp_backup; tar -czf "/root/opudp_backup/opudp_$(date +%Y%m%d).tar.gz" /etc/zivpn /etc/passwd /etc/shadow; echo -e "${GRN}Backup created.${RST}"; read -p "Press Enter..." ;;
+        14) ls /root/opudp_backup/*.tar.gz 2>/dev/null; read -p "File to restore: " f; [ -f "$f" ] && { systemctl stop zivpn udp-custom; tar -xzf "$f" -C /; systemctl start zivpn udp-custom; echo "Restored."; }; read -p "Press Enter..." ;;
+        15) wget -qO /usr/local/bin/onepesewa https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/onepesewa && chmod +x /usr/local/bin/onepesewa && echo -e "${GRN}Updated. Restarting...${RST}"; sleep 2; exec onepesewa ;;
+        16) trial_user ;;
+        17) user_info ;;
+        18) read -p "Bot Token: " t; echo "$t" > /etc/zivpn/telegram_token; systemctl enable opudp-bot 2>/dev/null; systemctl restart opudp-bot 2>/dev/null; echo -e "${GRN}Bot configured.${RST}"; read -p "Press Enter..." ;;
+        99) systemctl stop zivpn udp-custom; rm -rf /etc/zivpn /usr/local/bin/zivpn /usr/local/bin/onepesewa /root/udp-custom*; echo -e "${RED}Uninstalled.${RST}"; exit ;;
         0) clear; echo "Goodbye!"; exit ;;
         *) echo -e "${RED}Invalid option.${RST}"; read -p "Press Enter..." ;;
     esac

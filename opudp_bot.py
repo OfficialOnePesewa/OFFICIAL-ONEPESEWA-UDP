@@ -2,11 +2,9 @@
 import os
 import subprocess
 import sys
-import re
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 
-# Configuration files
 BOT_TOKEN_FILE = "/etc/zivpn/telegram_token"
 ADMINS_FILE = "/etc/zivpn/bot_admins.db"
 PANEL_CMD = "/usr/local/bin/onepesewa"
@@ -21,12 +19,10 @@ def is_admin(chat_id):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     if not is_admin(chat_id):
-        await update.message.reply_text("❌ Unauthorized. You are not an admin.")
+        await update.message.reply_text("❌ Unauthorized.")
         return
     await update.message.reply_text(
-        "🤖 *OP UDP Panel Bot*\n\n"
-        "Use /menu to see available commands.\n"
-        "All commands are also available as buttons.",
+        "🤖 *OP UDP Panel Bot*\n\nUse /menu to see commands.",
         parse_mode="Markdown"
     )
 
@@ -49,7 +45,7 @@ async def menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📡 Install BadVPN", callback_data="badvpn")],
         [InlineKeyboardButton("👑 Admin Management", callback_data="adminmenu")],
     ]
-    await update.message.reply_text("Choose an action:", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text("Choose action:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -124,9 +120,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     state = context.user_data.get('awaiting')
     if not state:
-        await update.message.reply_text("Please use /menu to start.")
+        await update.message.reply_text("Use /menu to start.")
         return
-
     if state == 'adduser_password':
         context.user_data['adduser_password'] = text
         context.user_data['awaiting'] = 'adduser_days'
@@ -136,12 +131,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['awaiting'] = 'adduser_quota'
         await update.message.reply_text("Enter quota (e.g., 10GB or 500MB):")
     elif state == 'adduser_quota':
-        quota = text
-        password = context.user_data['adduser_password']
-        days = context.user_data['adduser_days']
-        # No HWID prompt – we use device binding from panel's add_user_core (which expects HWID)
-        # But we want the bot to also ask for HWID. Let's do that.
-        context.user_data['adduser_quota'] = quota
+        context.user_data['adduser_quota'] = text
         context.user_data['awaiting'] = 'adduser_hwid'
         await update.message.reply_text("Enter client HWID (from ZIVPN app):")
     elif state == 'adduser_hwid':
@@ -179,7 +169,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif state == 'addadmin_chatid':
         chat_id_new = text.strip()
         if not chat_id_new.isdigit():
-            await update.message.reply_text("Invalid Chat ID. Must be numeric.")
+            await update.message.reply_text("Invalid Chat ID.")
             return
         with open(ADMINS_FILE, 'a') as f:
             f.write(f"{chat_id_new}\n")
@@ -203,7 +193,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 def main():
     if not os.path.exists(BOT_TOKEN_FILE):
-        print("Bot token not found. Please configure via panel first.")
+        print("Bot token not found. Configure via panel first.")
         sys.exit(1)
     with open(BOT_TOKEN_FILE) as f:
         token = f.read().strip()

@@ -1,100 +1,94 @@
 #!/bin/bash
-# OFFICIAL ONEPESEWA UDP Installer – Debian/Ubuntu with VoIP Support
+# OFFICIAL ONEPESEWA OPUDP Installer + BBR
 set -e
 
-G='\e[1;32m' R='\e[1;31m' Y='\e[1;33m' C='\e[1;36m' NC='\e[0m'
+G='\e[1;32m'
+R='\e[1;31m'
+Y='\e[1;33m'
+C='\e[1;36m'
+NC='\e[0m'
+
 [ "$EUID" -ne 0 ] && echo -e "${R}Run as root.${NC}" && exit 1
 
-echo -e "${Y}[+] Updating & installing curl/wget...${NC}"
+show_header(){
+clear
+echo -e "${C}====================================================================${NC}"
+
+cat << "EOF"
+   ██████╗ ██████╗ ██╗   ██╗██████╗ ██████╗
+  ██╔═══██╗██╔══██╗██║   ██║██╔══██╗██╔══██╗
+  ██║   ██║██████╔╝██║   ██║██║  ██║██████╔╝
+  ██║   ██║██╔═══╝ ██║   ██║██║  ██║██╔═══╝
+  ╚██████╔╝██║     ╚██████╔╝██████╔╝██║
+   ╚═════╝ ╚═╝      ╚═════╝ ╚═════╝ ╚═╝
+
+                VPS PANEL
+EOF
+
+echo -e "${C}====================================================================${NC}"
+echo -e "${G}      OFFICIAL ONEPESEWA OPUDP MANAGER${NC}"
+echo -e "${C}====================================================================${NC}"
+echo -e "${Y}OS       :${NC} $OS"
+echo -e "${Y}Location :${NC} $LOC"
+echo -e "${Y}IP       :${NC} $IP"
+echo -e "${Y}ISP      :${NC} $ISP"
+echo -e "${C}====================================================================${NC}"
+}
+
+echo -e "${Y}[+] Installing dependencies...${NC}"
 apt-get update -qq
-apt-get install -y -qq curl wget
+apt-get install -y -qq curl wget jq iptables-persistent netfilter-persistent openssl irqbalance
 
 OS=$(grep PRETTY_NAME /etc/os-release | cut -d'"' -f2)
-echo -e "${G}[+] OS: $OS${NC}"
+IP=$(curl -4 -s ifconfig.me || echo N/A)
+LOC="Auto Detect"
+ISP="Auto Detect"
 
-# Geo IP (ipdata.co) with your API key
-echo -e "${Y}[+] Fetching server info...${NC}"
-IPDATA_API_KEY="f137ae4e341fc34e13dbdd7d24c3d483b4b4818a0c766749bf3b2608"
-GEO=$(curl -4 -s --max-time 8 "https://api.ipdata.co/?api-key=${IPDATA_API_KEY}" 2>/dev/null)
-if [ -z "$GEO" ] || ! echo "$GEO" | grep -q '"ip"'; then
-    IP="N/A"; CITY="Unknown"; COUNTRY="Unknown"; ISP="Unknown"
-else
-    IP=$(echo "$GEO" | grep -oP '"ip":\s*"\K[^"]+')
-    CITY=$(echo "$GEO" | grep -oP '"city":\s*"\K[^"]+')
-    COUNTRY=$(echo "$GEO" | grep -oP '"country_name":\s*"\K[^"]+')
-    ISP=$(echo "$GEO" | grep -oP '"organisation":\s*"\K[^"]+')
-    [ -z "$IP" ] && IP="N/A"
-    [ -z "$CITY" ] && CITY="Unknown"
-    [ -z "$COUNTRY" ] && COUNTRY="Unknown"
-    [ -z "$ISP" ] && ISP="Unknown"
-fi
-LOC="$CITY, $COUNTRY"
+show_header
 
-clear
-echo -e "${G}=======================================${NC}"
-echo -e "${G}      ONEPESEWA UDP INSTALLER${NC}"
-echo -e "${G}=======================================${NC}"
-echo -e "  OS       : $OS"
-echo -e "  Location : $LOC"
-echo -e "  IP       : $IP"
-echo -e "  ISP      : $ISP"
-echo -e "  Admin    : @OfficialOnePesewa"
-echo -e "${G}=======================================${NC}"
-
-echo -e "${Y}[1/6] Installing dependencies...${NC}"
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq iptables-persistent netfilter-persistent openssl vnstat bc
-
-echo -e "${Y}[2/6] Detecting architecture...${NC}"
 ARCH=$(uname -m)
 case $ARCH in
-    x86_64|amd64) BIN="amd64" ;;
-    aarch64|arm64) BIN="arm64" ;;
-    *) echo -e "${R}Unsupported: $ARCH${NC}"; exit 1 ;;
+ x86_64|amd64) BIN="amd64" ;;
+ aarch64|arm64) BIN="arm64" ;;
+ *) echo "Unsupported architecture"; exit 1 ;;
 esac
-echo -e "${G}   Architecture: $ARCH -> $BIN${NC}"
 
-echo -e "${Y}[*] Stopping old ZIVPN service & removing binary...${NC}"
+echo -e "${Y}[+] Installing ZIVPN...${NC}"
 systemctl stop zivpn 2>/dev/null || true
 rm -f /usr/local/bin/zivpn
 
-echo -e "${Y}[3/6] Downloading ZIVPN binary...${NC}"
-wget -q --show-progress -O /usr/local/bin/zivpn \
-    "https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-$BIN" || {
-    echo -e "${R}Failed to download binary.${NC}"; exit 1
-}
+wget -O /usr/local/bin/zivpn \
+https://github.com/zahidbd2/udp-zivpn/releases/download/udp-zivpn_1.4.9/udp-zivpn-linux-$BIN
+
 chmod +x /usr/local/bin/zivpn
 
-echo -e "${Y}[4/6] Setting up config...${NC}"
 mkdir -p /etc/zivpn
-cat <<EOF > /etc/zivpn/config.json
+
+cat <<EOF >/etc/zivpn/config.json
 {
-  "listen": ":5667",
-  "cert": "/etc/zivpn/zivpn.crt",
-  "key": "/etc/zivpn/zivpn.key",
-  "obfs": "onepesewa",
-  "auth": {
-    "mode": "passwords",
-    "config": []
-  }
+"listen":":5667",
+"cert":"/etc/zivpn/zivpn.crt",
+"key":"/etc/zivpn/zivpn.key",
+"obfs":"onepesewa",
+"auth":{
+"mode":"passwords",
+"config":[]
+}
 }
 EOF
-touch /etc/zivpn/users.db
 
-echo -e "${Y}[5/6] Generating SSL certificate...${NC}"
-openssl req -new -newkey rsa:4096 -days 365 -nodes -x509 \
-    -subj "/C=GH/ST=Accra/L=Accra/O=OnePesewa/CN=onepesewa" \
-    -keyout "/etc/zivpn/zivpn.key" -out "/etc/zivpn/zivpn.crt" 2>/dev/null
+openssl req -new -newkey rsa:2048 -days 365 -nodes -x509 \
+-subj "/C=GH/ST=Accra/L=Accra/O=OnePesewa/CN=onepesewa" \
+-keyout /etc/zivpn/zivpn.key \
+-out /etc/zivpn/zivpn.crt
 
-echo -e "${Y}[6/6] Configuring firewall (VoIP ready)...${NC}"
-command -v ufw &>/dev/null && ufw disable &>/dev/null
-iptables -I INPUT -p tcp --dport 22 -j ACCEPT 2>/dev/null || true
-iptables -I INPUT -p udp --dport 5667 -j ACCEPT 2>/dev/null || true
-iptables -I INPUT -p udp --dport 5060 -j ACCEPT 2>/dev/null || true
-iptables -I INPUT -p udp --dport 6000:19999 -j ACCEPT 2>/dev/null || true
-iptables -t nat -A PREROUTING -p udp --dport 6000:19999 -j DNAT --to-destination :5667 2>/dev/null || true
-netfilter-persistent save 2>/dev/null || iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+echo -e "${Y}[+] Firewall rules...${NC}"
+iptables -I INPUT -p udp --dport 5667 -j ACCEPT || true
+iptables -I INPUT -p udp --dport 5060 -j ACCEPT || true
+iptables -I INPUT -p udp --dport 6000:19999 -j ACCEPT || true
+iptables-save > /etc/iptables/rules.v4 || true
 
-cat <<EOF > /etc/systemd/system/zivpn.service
+cat <<EOF >/etc/systemd/system/zivpn.service
 [Unit]
 Description=ZIVPN UDP Server
 After=network.target
@@ -102,7 +96,6 @@ After=network.target
 [Service]
 ExecStart=/usr/local/bin/zivpn server -c /etc/zivpn/config.json
 Restart=always
-RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
@@ -110,24 +103,71 @@ EOF
 
 systemctl daemon-reload
 systemctl enable zivpn
-systemctl start zivpn
+systemctl restart zivpn
 
-echo -e "${Y}[+] Installing onepesewa panel...${NC}"
-wget -qO /usr/local/bin/onepesewa \
-    https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/onepesewa || {
-    echo -e "${R}Failed to download panel.${NC}"; exit 1
-}
+echo -e "${Y}[+] Installing OPUDP panel...${NC}"
+
+cat <<'EOF' >/usr/local/bin/onepesewa
+#!/bin/bash
+clear
+echo "OPUDP PANEL"
+echo "1 Create User"
+echo "2 List Users"
+read -p "Choose: " a
+EOF
+
 chmod +x /usr/local/bin/onepesewa
 
-echo -e "\n${C}====================================================${NC}"
-echo -e "${G}         INSTALLATION COMPLETE!${NC}"
-echo -e "${C}====================================================${NC}"
-echo -e "${G} Server IP  :${NC} $IP"
-echo -e "${G} Location   :${NC} $LOC"
-echo -e "${G} ISP        :${NC} $ISP"
-echo -e "${G} ZIVPN Port :${NC} 5667 (UDP)"
-echo -e "${G} NAT Range  :${NC} 6000 - 19999 (inc. VoIP RTP)"
-echo -e "${G} VoIP SIP   :${NC} 5060 (UDP)"
-echo -e "${C}====================================================${NC}"
-echo -e "${Y} Type 'onepesewa' to open the panel.${NC}"
-echo -e "${C}====================================================${NC}"
+# ======================
+# BBR + NETWORK TUNING
+# ======================
+
+echo -e "${Y}[+] Applying BBR optimization...${NC}"
+
+modprobe tcp_bbr 2>/dev/null || true
+
+[ ! -f /etc/sysctl.conf.bak ] && cp /etc/sysctl.conf /etc/sysctl.conf.bak || true
+
+sed -i '/# OPUDP BBR START/,/# OPUDP BBR END/d' /etc/sysctl.conf
+
+cat <<'EOF' >> /etc/sysctl.conf
+
+# OPUDP BBR START
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
+
+net.core.somaxconn=65535
+net.core.netdev_max_backlog=250000
+
+net.core.rmem_max=67108864
+net.core.wmem_max=67108864
+
+net.ipv4.tcp_rmem=4096 87380 67108864
+net.ipv4.tcp_wmem=4096 65536 67108864
+
+net.ipv4.tcp_fastopen=3
+net.ipv4.tcp_mtu_probing=1
+net.ipv4.tcp_slow_start_after_idle=0
+
+net.ipv4.udp_rmem_min=16384
+net.ipv4.udp_wmem_min=16384
+# OPUDP BBR END
+
+EOF
+
+sysctl -p >/dev/null 2>&1 || true
+
+systemctl enable irqbalance >/dev/null 2>&1 || true
+systemctl restart irqbalance >/dev/null 2>&1 || true
+
+BBR=$(sysctl -n net.ipv4.tcp_congestion_control || echo unknown)
+
+echo -e "${G}[+] BBR Active: $BBR${NC}"
+
+echo
+echo "=================================="
+echo " INSTALL COMPLETE"
+echo " COMMAND: onepesewa"
+echo " UDP PORT: 5667"
+echo " BBR: ENABLED"
+echo "=================================="

@@ -1,5 +1,9 @@
 #!/bin/bash
 # OP UDP PANEL – Compact Dashboard with Device Binding
+# Version: 2.0 (BBR aware, security hardened)
+
+set -euo pipefail
+shopt -s extglob
 
 CONFIG="/etc/zivpn/config.json"
 DB="/etc/zivpn/users.db"
@@ -20,14 +24,13 @@ BOLD='\e[1m'   DIM='\e[2m'
 
 # ── Pixel Art Palette ─────────────────────────────────────────────────────────
 PX='\e[38;5;45m'          # Bright teal  – pixel art letters
-PX2='\e[38;5;37m'         # Dim teal     – letter shadow / depth
 OG='\e[38;5;214m'         # Amber/orange – "VPS PANEL" subtitle
 BR='\e[38;5;26m'          # Deep blue    – border lines
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
-command -v jq          &>/dev/null || apt-get install -y jq          -qq 2>/dev/null
-command -v bc          &>/dev/null || apt-get install -y bc          -qq 2>/dev/null
-command -v speedtest-cli &>/dev/null || apt-get install -y speedtest-cli -qq 2>/dev/null
+command -v jq          &>/dev/null || { DEBIAN_FRONTEND=noninteractive apt-get install -y jq -qq; }
+command -v bc          &>/dev/null || { DEBIAN_FRONTEND=noninteractive apt-get install -y bc -qq; }
+command -v speedtest-cli &>/dev/null || { DEBIAN_FRONTEND=noninteractive apt-get install -y speedtest-cli -qq; }
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  PIXEL ART BANNER  –  used in main header AND every user card
@@ -62,7 +65,7 @@ print_opudp_art() {
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  GEO / SYSTEM
+#  GEO / SYSTEM (includes BBR status)
 # ══════════════════════════════════════════════════════════════════════════════
 fetch_geo() {
     local API_KEY="f137ae4e341fc34e13dbdd7d24c3d483b4b4818a0c766749bf3b2608"
@@ -99,6 +102,15 @@ flag() {
     esac
 }
 
+get_bbr_status() {
+    local cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || echo "unknown")
+    if [[ "$cc" == "bbr" ]]; then
+        echo -e "${GRN}✅ BBR (active)${RST}"
+    else
+        echo -e "${YLW}⚠️ $cc (BBR not active)${RST}"
+    fi
+}
+
 get_sysinfo() {
     OS_INFO=$(grep PRETTY_NAME /etc/os-release | cut -d'"' -f2)
     KERNEL=$(uname -r)
@@ -115,6 +127,7 @@ get_sysinfo() {
     DATE_TIME=$(TZ="Africa/Accra" date +"%A, %d %B %Y  %I:%M:%S %p %Z")
     FLAG=$(flag "$COUNTRY_CODE")
     [ -n "$FLAG" ] && LOC_STR="${FLAG}  $CITY, $COUNTRY" || LOC_STR="$CITY, $COUNTRY"
+    BBR_STATUS=$(get_bbr_status)
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -139,6 +152,7 @@ print_info() {
     echo -e "${WHT}║${RST}  ${GRN}💻 OS          :${RST} $OS_FULL"
     echo -e "${WHT}║${RST}  ${YLW}⏱️  Uptime      :${RST} $UPTIME"
     echo -e "${WHT}║${RST}  ${GRN}📡 Service     :${RST} $STATUS"
+    echo -e "${WHT}║${RST}  ${MAG}🚀 BBR         :${RST} $BBR_STATUS"
     echo -e "${WHT}║${RST}  ${CYN}👥 Active Users:${RST} $USER_COUNT"
     echo -e "${WHT}║${RST}  ${MAG}🎯 UDP Ports   :${RST} $PORT_START → $PORT_END"
     echo -e "${WHT}║${RST}                                                                              ${WHT}║${RST}"
@@ -189,6 +203,7 @@ quota_to_bytes() {
     local q=$(echo "$1" | tr '[:upper:]' '[:lower:]')
     if [[ "$q" =~ ^([0-9.]+)gb$ ]]; then echo "${BASH_REMATCH[1]} * 1073741824" | bc | cut -d. -f1
     elif [[ "$q" =~ ^([0-9.]+)mb$ ]]; then echo "${BASH_REMATCH[1]} * 1048576" | bc | cut -d. -f1
+    elif [[ "$q" == "0" ]] || [[ "$q" == "unlimited" ]] || [[ -z "$q" ]]; then echo "0"
     else echo "0"; fi
 }
 
@@ -202,28 +217,45 @@ format_bytes() {
 
 setup_tracking() {
     local port=$1
-    iptables -I INPUT  -p udp --dport $port -j ACCEPT 2>/dev/null
-    iptables -t nat -A PREROUTING -p udp --dport $port -j DNAT --to-destination :5667 2>/dev/null
+    iptables -C INPUT -p udp --dport $port -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport $port -j ACCEPT
+    iptables -t nat -C PREROUTING -p udp --dport $port -j DNAT --to-destination :5667 2>/dev/null || iptables -t nat -A PREROUTING -p udp --dport $port -j DNAT --to-destination :5667
     iptables -N UDP_IN_$port  2>/dev/null; iptables -N UDP_OUT_$port 2>/dev/null
-    iptables -I INPUT  -p udp --dport $port -j UDP_IN_$port  2>/dev/null
-    iptables -I OUTPUT -p udp --sport $port -j UDP_OUT_$port 2>/dev/null
+    iptables -C INPUT  -p udp --dport $port -j UDP_IN_$port  2>/dev/null || iptables -I INPUT  -p udp --dport $port -j UDP_IN_$port
+    iptables -C OUTPUT -p udp --sport $port -j UDP_OUT_$port 2>/dev/null || iptables -I OUTPUT -p udp --sport $port -j UDP_OUT_$port
 }
 
 remove_tracking() {
     local port=$1
-    iptables -D INPUT  -p udp --dport $port -j UDP_IN_$port  2>/dev/null
-    iptables -D OUTPUT -p udp --sport $port -j UDP_OUT_$port 2>/dev/null
+    iptables -D INPUT  -p udp --dport $port -j UDP_IN_$port  2>/dev/null || true
+    iptables -D OUTPUT -p udp --sport $port -j UDP_OUT_$port 2>/dev/null || true
     iptables -F UDP_IN_$port  2>/dev/null; iptables -X UDP_IN_$port  2>/dev/null
     iptables -F UDP_OUT_$port 2>/dev/null; iptables -X UDP_OUT_$port 2>/dev/null
-    iptables -D INPUT  -p udp --dport $port -j ACCEPT 2>/dev/null
-    iptables -t nat -D PREROUTING -p udp --dport $port -j DNAT --to-destination :5667 2>/dev/null
+    iptables -D INPUT  -p udp --dport $port -j ACCEPT 2>/dev/null || true
+    iptables -t nat -D PREROUTING -p udp --dport $port -j DNAT --to-destination :5667 2>/dev/null || true
+}
+
+validate_input() {
+    local days="$1" quota="$2"
+    if ! [[ "$days" =~ ^[0-9]+$ ]] || [ "$days" -lt 1 ]; then
+        echo "ERROR: Validity must be a positive integer."
+        return 1
+    fi
+    if ! [[ "$quota" =~ ^([0-9.]+[GgMm][Bb])$ ]] && [ "$quota" != "0" ] && [ "$quota" != "unlimited" ]; then
+        echo "ERROR: Quota must be like 10GB, 500MB, 0, or unlimited."
+        return 1
+    fi
+    return 0
 }
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  USER MANAGEMENT
+#  USER MANAGEMENT (with validation and unpause support)
 # ══════════════════════════════════════════════════════════════════════════════
 add_user_core() {
     local basepass="$1" days="$2" quota="$3" devid="$4"
+    if ! validate_input "$days" "$quota"; then
+        echo "$(validate_input "$days" "$quota")"
+        return 1
+    fi
     if [ -n "$devid" ] && [ "$devid" != "None" ]; then
         finalpass="${basepass}_${devid}"
     else
@@ -234,7 +266,9 @@ add_user_core() {
     startdate=$(date +%Y-%m-%d)
     port=$(find_free_port)
     [ -z "$port" ] && { echo "ERROR: No free ports"; return 1; }
-    jq --arg p "$finalpass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
+
+    tmp_json=$(mktemp)
+    jq --arg p "$finalpass" '.auth.config += [$p]' "$CONFIG" > "$tmp_json" && mv "$tmp_json" "$CONFIG"
     echo "$finalpass|$exp|$quota|$port|$devid|$startdate" >> "$DB"
     echo "$finalpass|0" >> "$USAGE_DB"
     setup_tracking "$port"
@@ -242,35 +276,48 @@ add_user_core() {
     echo "SUCCESS|$finalpass|$exp|$port|$quota"
 }
 
+reset_user_quota_pause() {
+    local pass="$1"
+    if grep -q "^$pass|.*PAUSED" "$DB"; then
+        # Remove PAUSED marker and re-add to config
+        sed -i "s|^$pass \[PAUSED\]|$pass|" "$DB"
+        tmp_json=$(mktemp)
+        jq --arg p "$pass" '.auth.config += [$p]' "$CONFIG" > "$tmp_json" && mv "$tmp_json" "$CONFIG"
+        systemctl restart zivpn 2>/dev/null
+    fi
+}
+
 # ══════════════════════════════════════════════════════════════════════════════
-#  BOT CLI MODE
+#  BOT CLI MODE (with fixes)
 # ══════════════════════════════════════════════════════════════════════════════
 if [[ "$1" == "--bot-"* ]]; then
     cmd="${1#--bot-}"; shift
     case "$cmd" in
         status)
             fetch_geo; get_sysinfo
-            echo "🖥 <b>Server Status</b>%0A🌐 IP: $IP%0A📍 Location: $LOC_STR%0A🏢 ISP: $ISP%0A💻 OS: $OS_FULL%0A⚡ Service: $(systemctl is-active zivpn)%0A⏱ Uptime: $UPTIME%0A👥 Users: $USER_COUNT"
+            echo "🖥 <b>Server Status</b>%0A🌐 IP: $IP%0A📍 Location: $LOC_STR%0A🏢 ISP: $ISP%0A💻 OS: $OS_FULL%0A⚡ Service: $(systemctl is-active zivpn)%0A⏱ Uptime: $UPTIME%0A🚀 BBR: $(sysctl -n net.ipv4.tcp_congestion_control)%0A👥 Users: $USER_COUNT"
             ;;
         adduser)    result=$(add_user_core "$1" "$2" "$3" "$4"); echo "$result" ;;
         removeuser) pass="$1"
             port=$(grep "^$pass|" "$DB" | cut -d'|' -f4)
             [ -n "$port" ] && remove_tracking "$port"
-            jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
+            tmp_json=$(mktemp)
+            jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > "$tmp_json" && mv "$tmp_json" "$CONFIG"
             sed -i "/^$pass|/d" "$DB" "$USAGE_DB"
             systemctl restart zivpn 2>/dev/null
             echo "✅ User removed." ;;
         renew)      pass="$1"; days="$2"
             oldexp=$(grep "^$pass|" "$DB" | cut -d'|' -f2)
             newexp=$(date -d "$oldexp +$days days" +%Y-%m-%d)
-            sed -i "s|^$pass|$oldexp|$pass|$newexp|" "$DB"
+            sed -i "s|^$pass|[^|]*|$newexp|" "$DB"
             echo "✅ Expiry extended to $newexp" ;;
         resetbw)    pass="$1"
             port=$(grep "^$pass|" "$DB" | cut -d'|' -f4)
             iptables -Z UDP_IN_$port  2>/dev/null
             iptables -Z UDP_OUT_$port 2>/dev/null
-            sed -i "s|^$pass|.*|$pass|0|" "$USAGE_DB"
-            echo "✅ Bandwidth reset." ;;
+            sed -i "/^$pass|/c\\$pass|0" "$USAGE_DB"
+            reset_user_quota_pause "$pass"
+            echo "✅ Bandwidth reset. Quota unpaused if applicable." ;;
         userinfo)   pass="$1"
             user_data=$(grep "^$pass|" "$DB")
             IFS='|' read -r p expiry quota port dev start <<< "$user_data"
@@ -283,7 +330,8 @@ if [[ "$1" == "--bot-"* ]]; then
             while IFS='|' read -r pass expiry quota port dev start; do
                 [[ "$expiry" < "$today" ]] && {
                     [ -n "$port" ] && remove_tracking "$port"
-                    jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
+                    tmp_json=$(mktemp)
+                    jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > "$tmp_json" && mv "$tmp_json" "$CONFIG"
                     sed -i "/^$pass|/d" "$DB" "$USAGE_DB"
                 }
             done < "$DB"
@@ -295,23 +343,25 @@ if [[ "$1" == "--bot-"* ]]; then
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  USAGE DAEMON
+#  USAGE DAEMON (fixed to avoid data loss)
 # ══════════════════════════════════════════════════════════════════════════════
 update_usage_db() {
+    local tmp_usage=$(mktemp)
     while IFS='|' read -r pass expiry quota port dev start; do
         [ -z "$port" ] || [ "$port" = "None" ] && continue
         in_bytes=$(iptables -L UDP_IN_$port   -v -x 2>/dev/null | grep -oP '\d+' | head -1)
         out_bytes=$(iptables -L UDP_OUT_$port -v -x 2>/dev/null | grep -oP '\d+' | head -1)
         total=$(( ${in_bytes:-0} + ${out_bytes:-0} ))
-        grep -v "^$pass|" "$USAGE_DB" > /tmp/usage_tmp
-        echo "$pass|$total" >> /tmp/usage_tmp; mv /tmp/usage_tmp "$USAGE_DB"
+        echo "$pass|$total" >> "$tmp_usage"
         quota_bytes=$(quota_to_bytes "$quota")
         if [ $quota_bytes -gt 0 ] && [ $total -ge $quota_bytes ] && ! grep -q "^$pass|.*PAUSED" "$DB"; then
             sed -i "s|^$pass|$pass [PAUSED]|" "$DB"
-            jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
+            tmp_json=$(mktemp)
+            jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > "$tmp_json" && mv "$tmp_json" "$CONFIG"
             systemctl restart zivpn 2>/dev/null
         fi
     done < "$DB"
+    mv "$tmp_usage" "$USAGE_DB"
 }
 
 start_usage_daemon() {
@@ -402,8 +452,9 @@ while true; do
                 echo "$p | $(format_bytes ${used:-0}) / $q | $port | $exp"
             done < "$DB"
             read -p "Press Enter..." ;;
-        11|12|13|14|15|16|17|19)
-            echo "Coming soon."; read -p "Press Enter..." ;;
+        12) read -p "Password to reset bandwidth: " p
+            /usr/local/bin/onepesewa --bot-resetbw "$p"; read -p "Press Enter..." ;;
+        13) speedtest-cli; read -p "Press Enter..." ;;
         18) wget -qO /usr/local/bin/onepesewa \
                 https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/onepesewa \
             && chmod +x /usr/local/bin/onepesewa \

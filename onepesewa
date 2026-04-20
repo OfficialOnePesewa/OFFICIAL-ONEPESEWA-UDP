@@ -1,6 +1,6 @@
 #!/bin/bash
-# OP UDP PANEL – Professional 3D Dashboard with Device ID Embedding
-# Fixed: no port shown, easy copy of password string
+# OP UDP PANEL – Professional Dashboard with Device ID Embedding
+# Based on official zahidbd2/udp-zivpn configuration
 
 CONFIG="/etc/zivpn/config.json"
 DB="/etc/zivpn/users.db"

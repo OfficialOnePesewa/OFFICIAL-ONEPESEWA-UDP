@@ -1,5 +1,5 @@
 #!/bin/bash
-# OP UDP PANEL – Professional 3D Dashboard with HWID binding and Telegram bot
+# OP UDP PANEL – Professional 3D Dashboard with HWID binding, Telegram bot, and user status
 
 CONFIG="/etc/zivpn/config.json"
 DB="/etc/zivpn/users.db"
@@ -16,7 +16,6 @@ BOT_SCRIPT="/usr/local/bin/opudp_bot.py"
 RED='\e[1;31m' GRN='\e[1;32m' YLW='\e[1;33m' BLU='\e[1;34m' MAG='\e[1;35m' CYN='\e[1;36m' WHT='\e[1;37m' RST='\e[0m'
 BOLD='\e[1m' DIM='\e[2m'
 
-# Install basic dependencies silently
 command -v jq &>/dev/null || apt-get install -y jq -qq 2>/dev/null
 command -v bc &>/dev/null || apt-get install -y bc -qq 2>/dev/null
 
@@ -115,7 +114,7 @@ show_menu() {
     printf "${WHT}│${RST}  ${GRN}6)${RST} Add User   ${GRN}7)${RST} Remove     ${GRN}8)${RST} Renew      ${GRN}9)${RST} Cleanup      ${GRN}10)${RST} Conn Stats  ${WHT}│${RST}\n"
     printf "${WHT}│${RST}  ${GRN}11)${RST} BW+Expiry ${GRN}12)${RST} Reset BW   ${GRN}13)${RST} Speed Test ${GRN}14)${RST} Live Logs    ${GRN}15)${RST} Backup      ${WHT}│${RST}\n"
     printf "${WHT}│${RST}  ${GRN}16)${RST} Restore   ${GRN}17)${RST} Port Range ${GRN}18)${RST} ${YLW}Update${RST}     ${GRN}19)${RST} Conn Limit   ${GRN}20)${RST} Trial User  ${WHT}│${RST}\n"
-    printf "${WHT}│${RST}  ${GRN}21)${RST} 🚀 BBR Opt  ${GRN}22)${RST} 📡 BadVPN   ${GRN}23)${RST} 🤖 Bot Config   ${WHT}                                      │${RST}\n"
+    printf "${WHT}│${RST}  ${GRN}21)${RST} 🚀 BBR Opt  ${GRN}22)${RST} 📡 BadVPN   ${GRN}23)${RST} 🤖 Bot Config   ${GRN}24)${RST} User Status   ${WHT}│${RST}\n"
     printf "${WHT}├──────────────────────────────────────────────────────────────────────┤${RST}\n"
     printf "${WHT}│${RST}  ${RED}99) UNINSTALL${RST}                                                ${GRN}0) Exit${RST}  ${WHT}│${RST}\n"
     printf "${WHT}└──────────────────────────────────────────────────────────────────────┘${RST}\n"
@@ -163,6 +162,38 @@ add_user_core() {
     setup_tracking "$port"
     systemctl restart zivpn 2>/dev/null
     echo "SUCCESS|$finalpass|$exp|$port|$quota"
+}
+
+# Show user status (for panel option 24)
+show_user_status() {
+    echo -ne "${GRN}Enter full password: ${RST}"
+    read pass
+    user_data=$(grep "^$pass|" "$DB")
+    if [ -z "$user_data" ]; then
+        echo -e "${RED}Password not found.${RST}"
+        read -p "Press Enter..."
+        return
+    fi
+    IFS='|' read -r p expiry quota port hwid <<< "$user_data"
+    used=$(grep "^$pass|" "$USAGE_DB" | cut -d'|' -f2)
+    used=${used:-0}
+    quota_bytes=$(echo "$quota" | awk '/GB/ {print $1*1073741824} /MB/ {print $1*1048576} !/GB|MB/ {print 0}')
+    remain=$((quota_bytes - used))
+    [ $remain -lt 0 ] && remain=0
+    days_left=$(( ($(date -d "$expiry" +%s) - $(date +%s)) / 86400 ))
+    sessions=$(ss -un state established 2>/dev/null | grep -c ":$port" || echo 0)
+    echo -e "\n${CYN}╭──────────────────────────────────────────────────────╮${RST}"
+    echo -e "${CYN}│           📊 ACCOUNT STATUS 📊                         │${RST}"
+    echo -e "${CYN}├──────────────────────────────────────────────────────┤${RST}"
+    echo -e "${CYN}│${RST} ${YLW}🔑 Password  :${RST} $p"
+    echo -e "${CYN}│${RST} ${YLW}📅 Expiry    :${RST} $expiry (${days_left} days left)"
+    echo -e "${CYN}│${RST} ${YLW}📊 Quota     :${RST} $quota"
+    echo -e "${CYN}│${RST} ${YLW}📈 Used      :${RST} $(numfmt --to=iec $used 2>/dev/null || echo "$used B")"
+    echo -e "${CYN}│${RST} ${YLW}📉 Remaining :${RST} $(numfmt --to=iec $remain 2>/dev/null || echo "$remain B")"
+    echo -e "${CYN}│${RST} ${YLW}🔒 HWID      :${RST} $hwid"
+    echo -e "${CYN}│${RST} ${YLW}👥 Sessions  :${RST} $sessions"
+    echo -e "${CYN}╰──────────────────────────────────────────────────────╯${RST}"
+    read -p "Press Enter..."
 }
 
 add_user_interactive() {
@@ -285,17 +316,14 @@ config_telegram() {
                 read -p "Press Enter..."
                 return
             fi
-            # Install python3-telegram-bot using --break-system-packages (Ubuntu 24.04 fix)
             if ! python3 -c "import telegram" 2>/dev/null; then
                 echo -e "${YLW}Installing python-telegram-bot...${RST}"
                 pip3 install python-telegram-bot --break-system-packages -q
             fi
-            # Download bot script if not exists
             if [ ! -f "$BOT_SCRIPT" ]; then
                 wget -qO "$BOT_SCRIPT" "https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/opudp_bot.py"
                 chmod +x "$BOT_SCRIPT"
             fi
-            # Create systemd service
             cat <<EOF > "$BOT_SERVICE_FILE"
 [Unit]
 Description=OP UDP Panel Telegram Bot
@@ -415,7 +443,30 @@ if [[ "$1" == "--bot-"* ]]; then
             quota_bytes=$(echo "$quota" | awk '/GB/ {print $1*1073741824} /MB/ {print $1*1048576} !/GB|MB/ {print 0}')
             remain=$((quota_bytes - used))
             days_left=$(( ($(date -d "$expiry" +%s) - $(date +%s)) / 86400 ))
-            echo "🔍 <b>${pass:0:20}</b>%0A📅 Expiry: $expiry ($days_left days)%0A📊 Quota: $quota%0A📈 Used: $(numfmt --to=iec $used)%0A📉 Remain: $(numfmt --to=iec $remain)%0A🔒 HWID: $hwid%0A🔌 Port: $port"
+            echo "🔍 <b>${p}</b>%0A📅 Expiry: $expiry ($days_left days)%0A📊 Quota: $quota%0A📈 Used: $(numfmt --to=iec $used)%0A📉 Remain: $(numfmt --to=iec $remain)%0A🔒 HWID: $hwid%0A🔌 Port: $port"
+            ;;
+        userstatus)
+            pass="$1"
+            user_data=$(grep "^$pass|" "$DB")
+            if [ -z "$user_data" ]; then
+                echo "❌ Password not found."
+                exit 1
+            fi
+            IFS='|' read -r p expiry quota port hwid <<< "$user_data"
+            used=$(grep "^$pass|" "$USAGE_DB" | cut -d'|' -f2)
+            used=${used:-0}
+            quota_bytes=$(echo "$quota" | awk '/GB/ {print $1*1073741824} /MB/ {print $1*1048576} !/GB|MB/ {print 0}')
+            remain=$((quota_bytes - used))
+            if [ $remain -lt 0 ]; then remain=0; fi
+            days_left=$(( ($(date -d "$expiry" +%s) - $(date +%s)) / 86400 ))
+            sessions=$(ss -un state established 2>/dev/null | grep -c ":$port" || echo 0)
+            echo "🔑 *Password:* $p"
+            echo "📅 *Expiry:* $expiry ($days_left days left)"
+            echo "📊 *Quota:* $quota"
+            echo "📈 *Used:* $(numfmt --to=iec $used 2>/dev/null || echo "$used B")"
+            echo "📉 *Remaining:* $(numfmt --to=iec $remain 2>/dev/null || echo "$remain B")"
+            echo "🔒 *HWID:* $hwid"
+            echo "👥 *Active sessions:* $sessions"
             ;;
         list)
             column -t -s "|" "$DB" | awk -F'|' '{print $1" | "$2" | "$3" | "$5}'
@@ -490,6 +541,7 @@ while true; do
         21) install_bbr ;;
         22) install_badvpn ;;
         23) config_telegram ;;
+        24) show_user_status ;;
         99) systemctl stop zivpn 2>/dev/null; rm -rf /etc/zivpn /usr/local/bin/zivpn /usr/local/bin/onepesewa; echo -e "${RED}Uninstalled.${RST}"; exit ;;
         0) goodbye; exit ;;
         *) echo -e "${RED}Invalid.${RST}"; read -p "Press Enter..." ;;

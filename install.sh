@@ -2,7 +2,8 @@
 # OFFICIAL ONEPESEWA UDP Installer – Debian/Ubuntu with VoIP Support
 set -e
 
-G='\e[1;32m' R='\e[1;31m' Y='\e[1;33m' C='\e[1;36m' NC='\e[0m'
+G='\e[1;32m' R='\e[1;31m' Y='\e[1;33m' C='\e[1;36m' M='\e[1;35m' W='\e[1;37m' NC='\e[0m'
+BOLD='\e[1m'
 [ "$EUID" -ne 0 ] && echo -e "${R}Run as root.${NC}" && exit 1
 
 echo -e "${Y}[+] Updating & installing curl/wget...${NC}"
@@ -28,23 +29,29 @@ else
 fi
 LOC="$CITY, $COUNTRY"
 
+# ==================== NEW ATTRACTIVE HEADER ====================
 clear
-echo -e "${G}"
-echo "   ___  _   _ ______ _____  ______ ______ _    _ ______          _    _ ______ _____  "
-echo "  / _ \| \ | |  ____|  __ \|  ____|  ____| |  | |  ____|   /\   | |  | |  __ \|  __ \ "
-echo " | | | |  \| | |__  | |__) | |__  | |__  | |  | | |__     /  \  | |  | | |__) | |__) |"
-echo " | | | |     |  __| |  ___/|  __| |  __| | |  | |  __|   / /\ \ | |  | |  ___/|  ___/ "
-echo " | |_| | |\  | |____| |    | |____| |____| |__| | |____ / ____ \| |__| | |    | |     "
-echo "  \___/|_| \_|______|_|    |______|______|\____/|______/_/    \_\\____/|_|    |_|     "
-echo -e "${NC}"
-echo "---------------------------------------------------"
-echo "  OS       : $OS"
-echo "  Location : $LOC"
-echo "  IP       : $IP"
-echo "  ISP      : $ISP"
-echo "  Admin    : @OfficialOnePesewa"
-echo "---------------------------------------------------"
+echo -e "${W}╔══════════════════════════════════════════════════════════════════════════════╗${NC}"
+echo -e "${W}║${NC}                                                                              ${W}║${NC}"
+echo -e "${W}║${NC}                          ${BOLD}${M}██████╗ ██████╗ ██╗   ██╗██████╗${NC}                           ${W}║${NC}"
+echo -e "${W}║${NC}                          ${BOLD}${M}██╔═══██╗██╔══██╗██║   ██║██╔══██╗${NC}                          ${W}║${NC}"
+echo -e "${W}║${NC}                          ${BOLD}${M}██║   ██║██████╔╝██║   ██║██║  ██║${NC}                          ${W}║${NC}"
+echo -e "${W}║${NC}                          ${BOLD}${M}██║   ██║██╔═══╝ ██║   ██║██║  ██║${NC}                          ${W}║${NC}"
+echo -e "${W}║${NC}                          ${BOLD}${M}╚██████╔╝██║     ╚██████╔╝██████╔╝${NC}                          ${W}║${NC}"
+echo -e "${W}║${NC}                          ${BOLD}${M} ╚═════╝ ╚═╝      ╚═════╝ ╚═════╝${NC}                           ${W}║${NC}"
+echo -e "${W}║${NC}                                                                              ${W}║${NC}"
+echo -e "${W}╠══════════════════════════════════════════════════════════════════════════════╣${NC}"
+echo -e "${W}║${NC}                         ${G}${BOLD}Professional UDP Tunnel Installer${NC}                         ${W}║${NC}"
+echo -e "${W}╚══════════════════════════════════════════════════════════════════════════════╝${NC}"
+echo ""
+echo -e "${G}  OS       :${NC} $OS"
+echo -e "${G}  Location :${NC} $LOC"
+echo -e "${G}  IP       :${NC} $IP"
+echo -e "${G}  ISP      :${NC} $ISP"
+echo -e "${G}  Admin    :${NC} @OfficialOnePesewa"
+echo ""
 
+# ==================== REST OF THE INSTALLER (unchanged) ====================
 echo -e "${Y}[1/6] Installing dependencies...${NC}"
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq jq iptables-persistent netfilter-persistent openssl vnstat bc
 

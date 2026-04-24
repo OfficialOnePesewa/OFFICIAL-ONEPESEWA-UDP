@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# opudp-bot.py – Telegram Bot for OP UDP Panel
 import os
 import subprocess
 import sys

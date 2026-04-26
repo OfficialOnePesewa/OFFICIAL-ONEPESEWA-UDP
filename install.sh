@@ -14,9 +14,8 @@ BOLD='\e[1m'    DIM='\e[2m'
 
 ADMIN_HANDLE="@OfficialOnePesewa"
 TG_CHANNEL="https://t.me/officialonepesewatech"
-PANEL_VERSION="2.0.0"
+PANEL_VERSION="2.2.0"
 
-# ── Logo ───────────────────────────────────────────────────────
 print_logo() {
     echo ""
     echo -e "\e[38;5;196m\e[1m  ██████╗ ██████╗     ██╗   ██╗██████╗ ██████╗ \e[0m"
@@ -38,20 +37,16 @@ warn() { echo -e "  ${YLW}⚠  $*${RST}"; }
 err()  { echo -e "  ${RED}✘  $*${RST}"; }
 info() { echo -e "  ${DIM}   $*${RST}"; }
 
-# ── Bootstrap ──────────────────────────────────────────────────
 echo -e "${DIM}Bootstrapping...${RST}"
 apt-get update -qq
 apt-get install -y -qq curl wget
 
 OS=$(grep PRETTY_NAME /etc/os-release 2>/dev/null | cut -d'"' -f2 || uname -o)
 
-# ── Geo fetch: curl → wget fallback, 3-API chain ───────────────
+# Geo fetch (same as in panel)
 printf "${DIM}  Fetching server location...${RST}\r"
 GEO=""
-for api in \
-    "https://ipapi.co/json/" \
-    "https://ip-api.com/json/?fields=status,message,country,countryCode,city,zip,isp,query" \
-    "https://ipinfo.io/json"; do
+for api in "https://ipapi.co/json/" "https://ip-api.com/json/?fields=status,message,country,countryCode,city,zip,isp,query" "https://ipinfo.io/json"; do
     GEO=$(curl -4 -s --max-time 8 "$api" 2>/dev/null)
     [ -z "$GEO" ] && GEO=$(wget -q -O- --timeout=8 "$api" 2>/dev/null)
     [ -n "$GEO" ] && echo "$GEO" | grep -qE '"ip"|"query"' && break
@@ -73,7 +68,6 @@ else
 fi
 LOC="$CITY, $COUNTRY"
 
-# ── Banner ─────────────────────────────────────────────────────
 clear
 print_logo
 
@@ -87,18 +81,13 @@ printf  "  ${WHT}║${RST}  ${CYN}📢 Channel   :${RST}  ${WHT}%-47s${RST}${WHT
 echo -e "  ${WHT}╚═══════════════════════════════════════════════════════════════╝${RST}"
 echo ""
 
-# ══════════════════════════════════════════════════════════════
-#  STEP 1 – Dependencies
-# ══════════════════════════════════════════════════════════════
+# Step 1 – Dependencies
 step 1 6 "Installing dependencies"
-# Avoid prompts for iptables-persistent
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" \
-    jq iptables-persistent netfilter-persistent openssl vnstat bc python3-pip 2>/dev/null
-ok "jq  bc  openssl  vnstat  iptables-persistent  python3-pip  installed"
+    jq iptables-persistent netfilter-persistent openssl vnstat bc python3-pip conntrack 2>/dev/null
+ok "jq bc openssl vnstat iptables-persistent python3-pip conntrack installed"
 
-# ══════════════════════════════════════════════════════════════
-#  STEP 2 – Architecture
-# ══════════════════════════════════════════════════════════════
+# Step 2 – Architecture
 step 2 6 "Detecting system architecture"
 ARCH=$(uname -m)
 case $ARCH in
@@ -111,9 +100,7 @@ case $ARCH in
 esac
 ok "Architecture: ${ARCH} → ${BIN}"
 
-# ══════════════════════════════════════════════════════════════
-#  STEP 3 – Download ZIVPN binary
-# ══════════════════════════════════════════════════════════════
+# Step 3 – Download ZIVPN binary
 step 3 6 "Downloading ZIVPN v1.4.9"
 systemctl stop zivpn 2>/dev/null || true
 rm -f /usr/local/bin/zivpn
@@ -129,15 +116,12 @@ else
     exit 1
 fi
 
-# ══════════════════════════════════════════════════════════════
-#  STEP 4 – Config, SSL & kernel tuning
-# ══════════════════════════════════════════════════════════════
+# Step 4 – Config, SSL & kernel tuning
 step 4 6 "Setting up config, SSL & kernel"
 
 mkdir -p /etc/zivpn
 touch /etc/zivpn/users.db /etc/zivpn/usage.db
 
-# Write config only if missing
 if [ ! -f /etc/zivpn/config.json ]; then
     cat > /etc/zivpn/config.json <<'JSONEOF'
 {
@@ -155,7 +139,6 @@ else
     info "Existing config preserved."
 fi
 
-# SSL certificate
 if [ ! -f /etc/zivpn/zivpn.crt ] || [ ! -f /etc/zivpn/zivpn.key ]; then
     openssl req -new -newkey rsa:4096 -days 365 -nodes -x509 \
         -subj "/C=GH/ST=Accra/L=Accra/O=OnePesewa/CN=onepesewa" \
@@ -166,7 +149,6 @@ else
     info "Existing SSL cert preserved."
 fi
 
-# Kernel UDP tuning
 sysctl -w net.core.rmem_max=67108864     >/dev/null 2>&1 || true
 sysctl -w net.core.wmem_max=67108864     >/dev/null 2>&1 || true
 sysctl -w net.core.rmem_default=16777216 >/dev/null 2>&1 || true
@@ -184,9 +166,7 @@ SYSCTL
 sysctl --system >/dev/null 2>&1
 ok "Sysctl persisted and applied"
 
-# ══════════════════════════════════════════════════════════════
-#  STEP 5 – Firewall
-# ══════════════════════════════════════════════════════════════
+# Step 5 – Firewall
 step 5 6 "Configuring firewall"
 
 command -v ufw &>/dev/null && ufw disable &>/dev/null && info "UFW disabled"
@@ -215,7 +195,7 @@ fi
 ok "Firewall rules applied and saved"
 info "Open: 22/TCP  5060  5667  7300  6000-19999 (UDP)"
 
-# ── Systemd service ────────────────────────────────────────────
+# Systemd service for ZIVPN
 cat > /etc/systemd/system/zivpn.service <<'SERVICE'
 [Unit]
 Description=ZIVPN UDP Server – OP UDP Panel
@@ -247,16 +227,13 @@ else
     warn "ZIVPN failed to start – check: journalctl -u zivpn -n 30"
 fi
 
-# ══════════════════════════════════════════════════════════════
-#  STEP 6 – Download OPUDP Panel (onepesewa)
-# ══════════════════════════════════════════════════════════════
+# Step 6 – Download OPUDP Panel (onepesewa)
 step 6 6 "Installing OPUDP Panel"
 
 PANEL_URL="https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/onepesewa"
 if wget -qO /usr/local/bin/onepesewa "$PANEL_URL"; then
     chmod +x /usr/local/bin/onepesewa
     ok "Panel installed → /usr/local/bin/onepesewa"
-    # Create legacy alias for backward compatibility
     ln -sf /usr/local/bin/onepesewa /usr/local/bin/opudp 2>/dev/null || true
     info "Alias: opudp → onepesewa"
 else
@@ -264,9 +241,7 @@ else
     exit 1
 fi
 
-# ══════════════════════════════════════════════════════════════
-#  COMPLETION
-# ══════════════════════════════════════════════════════════════
+# Completion
 echo ""
 echo -e "  ${WHT}╔═══════════════════════════════════════════════════════════════╗${RST}"
 echo -e "  ${WHT}║${RST}  ${GRN}${BOLD}🎉  INSTALLATION COMPLETE!${RST}                                   ${WHT}║${RST}"
@@ -285,7 +260,7 @@ printf  "  ${WHT}║${RST}  ${CYN}📢 Channel     :${RST}  ${WHT}%-44s${RST}${W
 echo -e "  ${WHT}╚═══════════════════════════════════════════════════════════════╝${RST}"
 echo ""
 
-# ── Optional: BBR ──────────────────────────────────────────────
+# Optional BBR
 echo -e "  ${YLW}${BOLD}▸ Install BBR + TCP Optimizer?${RST}  ${DIM}(recommended)${RST}"
 echo -ne "  ${CYN}  [y/N]: ${RST}"; read -r answer_bbr
 if [[ "$answer_bbr" =~ ^[Yy]$ ]]; then
@@ -301,7 +276,7 @@ fi
 
 echo ""
 
-# ── Optional: BadVPN ───────────────────────────────────────────
+# Optional BadVPN
 echo -e "  ${YLW}${BOLD}▸ Install BadVPN UDP Gateway?${RST}  ${DIM}(for VoIP/WS tunneling)${RST}"
 echo -ne "  ${CYN}  [y/N]: ${RST}"; read -r answer_badvpn
 if [[ "$answer_badvpn" =~ ^[Yy]$ ]]; then

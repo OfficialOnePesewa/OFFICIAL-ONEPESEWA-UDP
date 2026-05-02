@@ -263,7 +263,6 @@ add_user_core() {
     local finalpass
     if [ -n "$userpass" ]; then
         finalpass="$userpass"
-        # check uniqueness
         if grep -q "^${finalpass}|" "$DB" 2>/dev/null; then
             echo "ERROR: Password already exists."; return 1
         fi
@@ -308,7 +307,6 @@ while true; do
     if [ -f "$PAUSE_DB" ] && [ -s "$PAUSE_DB" ]; then
         while IFS='|' read -r pass resume_ts; do
             if [ "$(date +%s)" -ge "$resume_ts" ]; then
-                # get port
                 port=$(grep "^${pass}|" "$DB" 2>/dev/null | cut -d'|' -f4)
                 if [ -n "$port" ]; then
                     iptables -D INPUT -p udp --dport "$port" -j DROP 2>/dev/null
@@ -361,10 +359,8 @@ pause_monitor_status() {
     fi
 }
 
-# pause a user
 pause_user() {
     local pass="$1" duration="$2"
-    # duration format: number + m/h/d (minutes, hours, days)
     if [[ ! "$duration" =~ ^[0-9]+[mhd]$ ]]; then
         echo "ERROR: Invalid duration format (e.g. 30m, 2h, 1d)."
         return 1
@@ -378,17 +374,14 @@ pause_user() {
     esac
     local port=$(grep "^${pass}|" "$DB" 2>/dev/null | cut -d'|' -f4)
     [ -z "$port" ] && { echo "ERROR: User not found."; return 1; }
-    # drop all traffic to that port
     iptables -I INPUT -p udp --dport "$port" -j DROP 2>/dev/null
     local resume_ts=$(( $(date +%s) + seconds ))
     mkdir -p "$(dirname "$PAUSE_DB")"
-    # remove existing pause entry
     sed -i "/^${pass}|/d" "$PAUSE_DB" 2>/dev/null
     echo "${pass}|${resume_ts}" >> "$PAUSE_DB"
     echo "SUCCESS|${pass}|${port}|${duration}|${resume_ts}"
 }
 
-# resume user manually
 resume_user() {
     local pass="$1"
     local port=$(grep "^${pass}|" "$DB" 2>/dev/null | cut -d'|' -f4)
@@ -398,7 +391,6 @@ resume_user() {
     echo "SUCCESS|${pass}|resumed"
 }
 
-# check if user is paused (returns remaining seconds, empty if not)
 get_pause_remaining() {
     local pass="$1"
     local resume_ts=$(grep "^${pass}|" "$PAUSE_DB" 2>/dev/null | cut -d'|' -f2)
@@ -412,7 +404,6 @@ get_pause_remaining() {
     echo ""
 }
 
-# formats remaining seconds to human string
 pause_remaining_human() {
     local sec=$1
     if [ $sec -ge 86400 ]; then echo "$(( sec / 86400 ))d $(( (sec % 86400) / 3600 ))h"
@@ -434,13 +425,10 @@ DB="/etc/zivpn/users.db"
 USAGE_DB="/etc/zivpn/usage.db"
 COUNTER_CACHE="/etc/zivpn/.bw_cache"
 LOG_FILE="/var/log/opudp_bwmon.log"
-
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"; }
-
 [ ! -f "$DB" ] && exit 0
 mkdir -p "$(dirname "$COUNTER_CACHE")"
 touch "$COUNTER_CACHE"
-
 update_usage() {
     local pass="$1"
     local in_bytes="$2"
@@ -451,7 +439,6 @@ update_usage() {
     sed -i "/^${pass}|/d" "$USAGE_DB" 2>/dev/null
     echo "${pass}|${new_used}" >> "$USAGE_DB"
 }
-
 while true; do
     while IFS='|' read -r pass expiry quota port hwid used; do
         [ -z "$port" ] && continue
@@ -490,14 +477,12 @@ enable_bw_monitor() {
 [Unit]
 Description=OP UDP Panel Bandwidth Monitor
 After=network.target
-
 [Service]
 Type=simple
 User=root
 ExecStart=$BWMON_DAEMON
 Restart=always
 RestartSec=10
-
 [Install]
 WantedBy=multi-user.target
 SERVEOF
@@ -535,17 +520,13 @@ write_ip_monitor_daemon() {
 DB="/etc/zivpn/users.db"
 IP_LIMIT_FILE="/etc/zivpn/ip_limits.db"
 LOG_FILE="/var/log/opudp_ipmon.log"
-
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"; }
-
 kill_ip_on_port() {
-    local ip="$1"
-    local port="$2"
+    local ip="$1" port="$2"
     conntrack -D -p udp --orig-dst "$port" --orig-src "$ip" 2>/dev/null
     conntrack -D -p udp --reply-src "$ip" --reply-dst "$port" 2>/dev/null
     conntrack -D -p udp --dport "$port" --src "$ip" 2>/dev/null
 }
-
 while true; do
     [ ! -f "$DB" ] && sleep 5 && continue
     while IFS='|' read -r pass expiry quota port hwid used; do
@@ -554,7 +535,6 @@ while true; do
         [ -z "$ip_limit" ] || [ "$ip_limit" -eq 0 ] && continue
         ip_file="/etc/zivpn/iplist_${pass}.db"
         [ ! -f "$ip_file" ] && touch "$ip_file"
-        # Clean old entries (> 2 hours)
         temp_file="${ip_file}.tmp"
         while IFS='|' read -r ip ts; do
             if [ $(( $(date +%s) - ts )) -lt 7200 ]; then
@@ -562,7 +542,6 @@ while true; do
             fi
         done < "$ip_file"
         mv "$temp_file" "$ip_file" 2>/dev/null
-        # Get currently active source IPs on this port
         ss -un state established 2>/dev/null | grep ":${port} " | awk '{print $5}' | cut -d: -f1 | sort -u | while read remote_ip; do
             [[ "$remote_ip" =~ ^(127\.|10\.|172\.1[6-9]|172\.2[0-9]|172\.3[0-1]|192\.168\.) ]] && continue
             if ! grep -q "^${remote_ip}|" "$ip_file" 2>/dev/null; then
@@ -593,14 +572,12 @@ enable_ip_monitor() {
 [Unit]
 Description=OP UDP Panel Instant IP Limit Monitor
 After=network.target
-
 [Service]
 Type=simple
 User=root
 ExecStart=$IPMON_DAEMON
 Restart=always
 RestartSec=5
-
 [Install]
 WantedBy=multi-user.target
 SERVEOF
@@ -650,11 +627,8 @@ write_enforce_script() {
 DB="/etc/zivpn/users.db"
 CONN_LIMIT_FILE="/etc/zivpn/conn_limits.db"
 LOG_FILE="/var/log/opudp_enforce.log"
-
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG_FILE"; }
-
 [ ! -f "$DB" ] && exit 0
-
 while IFS='|' read -r pass expiry quota port hwid used; do
     [ -z "$port" ] && continue
     limit=$(grep "^${pass}|" "$CONN_LIMIT_FILE" 2>/dev/null | cut -d'|' -f2)
@@ -749,7 +723,6 @@ do_list() {
         local color status paused=""
         if [[ "$exp" < "$today" ]]; then color="$RED"; status="Expired"
         else color="$GRN"; status="Active"; fi
-        # check paused
         local rem=$(get_pause_remaining "$pass")
         if [ -n "$rem" ]; then
             paused="⏸ $(pause_remaining_human "$rem")"
@@ -1632,7 +1605,7 @@ goodbye() {
     echo -e "  ${CYN}╠══════════════════════════════════════════════════════════════╣${RST}"
     printf  "  ${CYN}║${RST}  ${WHT}Admin   :${RST}  ${YLW}%-48s${RST}${CYN}║${RST}\n" "$ADMIN_HANDLE"
     printf  "  ${CYN}║${RST}  ${WHT}Channel :${RST}  ${CYN}%-48s${RST}${CYN}║${RST}\n" "$TG_CHANNEL"
-    echo -e "  ${CYN}╚══════════════════════════════════════════════════════════════╝${RST}\n"}
+    echo -e "  ${CYN}╚══════════════════════════════════════════════════════════════╝${RST}\n"
 }
 
 # ══════════════════════════════════════════════════════════════
@@ -1686,5 +1659,7 @@ while true; do
 done
 PANEL_EOF
 
+# Make executable and run
 chmod +x /usr/local/bin/onepesewa
-chmod +x /usr/local/bin/opudp 2>/dev/null
+ln -sf /usr/local/bin/onepesewa /usr/local/bin/opudp 2>/dev/null
+onepesewa

@@ -1336,6 +1336,8 @@ do_trial_user() {
     [ "$exp_days" -lt 1 ] && exp_days=1
 
     echo -ne "  ${GRN}Password (empty=random): ${RST}"; read -r trialpass
+    echo -ne "  ${GRN}Data quota (e.g. 100MB, 1GB) [default 100MB]: ${RST}"; read -r trialquota
+    [ -z "$trialquota" ] && trialquota="100MB"
     echo -ne "  ${GRN}IP limit (0=unlimited): ${RST}"; read -r iplim
     echo -ne "  ${GRN}Conn limit (0=unlimited): ${RST}"; read -r connlim
     [[ ! "$iplim" =~ ^[0-9]+$ ]] && iplim=0
@@ -1357,7 +1359,7 @@ do_trial_user() {
     mkdir -p "$(dirname "$CONFIG")"
     [ -f "$CONFIG" ] || echo '{"auth":{"config":[]}}' > "$CONFIG"
     jq --arg p "$finalpass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
-    echo "${finalpass}|${exp}|100MB|${port}|${hwid}|0" >> "$DB"
+    echo "${finalpass}|${exp}|${trialquota}|${port}|${hwid}|0" >> "$DB"
     echo "${finalpass}|0" >> "$USAGE_DB"
     echo "${finalpass}|${hwid}" >> "$HWID_ALLOWED_DB"
     [ "$iplim" -gt 0 ] && echo "${finalpass}|${iplim}" >> "$IP_LIMIT_FILE"
@@ -1372,7 +1374,7 @@ do_trial_user() {
     printf  "  ${GRN}║${RST}  ${YLW}🔑  Password :${RST}  ${WHT}%-44s${RST}${GRN}║${RST}\n" "$finalpass"
     printf  "  ${GRN}║${RST}  ${YLW}🌐  Server   :${RST}  ${WHT}%-44s${RST}${GRN}║${RST}\n" "$IP"
     printf  "  ${GRN}║${RST}  ${YLW}⏳  Expires  :${RST}  ${WHT}%-44s${RST}${GRN}║${RST}\n" "in ${duration} (auto-deleted)"
-    printf  "  ${GRN}║${RST}  ${YLW}📊  Quota    :${RST}  ${WHT}%-44s${RST}${GRN}║${RST}\n" "100MB"
+    printf  "  ${GRN}║${RST}  ${YLW}📊  Quota    :${RST}  ${WHT}%-44s${RST}${GRN}║${RST}\n" "$trialquota"
     printf  "  ${GRN}║${RST}  ${YLW}🔌  Port     :${RST}  ${WHT}%-44s${RST}${GRN}║${RST}\n" "$port"
     printf  "  ${GRN}║${RST}  ${YLW}🌐 IP Limit :${RST}  ${WHT}%-44s${RST}${GRN}║${RST}\n" "$([ "$iplim" -gt 0 ] && echo "$iplim unique IPs" || echo "Unlimited")"
     printf  "  ${GRN}║${RST}  ${YLW}🚥 Conn Limit:${RST} ${WHT}%-44s${RST}${GRN}║${RST}\n" "$([ "$connlim" -gt 0 ] && echo "$connlim concurrent" || echo "Unlimited")"

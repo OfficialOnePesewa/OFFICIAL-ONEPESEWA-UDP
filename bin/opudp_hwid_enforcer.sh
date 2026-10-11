@@ -25,7 +25,7 @@ journalctl -u zivpn -n0 -f --no-pager 2>/dev/null | while IFS= read -r line; do
 
         if [ -n "$pass" ] && [ -n "$hwid" ] && [ -n "$ip" ]; then
             allowed_hwid=$(grep "^${pass}|" "$HWID_DB" 2>/dev/null | cut -d'|' -f2)
-            if [ -n "$allowed_hwid" ]; then
+            if [ -n "$allowed_hwid" ] && [ "$allowed_hwid" != "any" ]; then
                 if [ "$hwid" != "$allowed_hwid" ]; then
                     port=$(grep "^${pass}|" "$USER_DB" 2>/dev/null | cut -d'|' -f4)
                     if [ -n "$port" ]; then

@@ -189,16 +189,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['awaiting'] = 'adduser_quota'
         await update.effective_message.reply_text("Enter quota (e.g., 10GB or 500MB):")
     elif state == 'adduser_quota':
-        context.user_data['adduser_quota'] = text
-        context.user_data['awaiting'] = 'adduser_hwid'
-        await update.effective_message.reply_text("Enter client HWID (from ZIVPN app, or 'any'):")
-    elif state == 'adduser_hwid':
-        hwid = text
         password = context.user_data.get('adduser_password', '')
         days = context.user_data.get('adduser_days', '')
-        quota = context.user_data.get('adduser_quota', '')
         await update.effective_message.reply_text("Creating user...")
-        await update.effective_message.reply_text(run_panel('--bot-adduser', password, days, quota, hwid))
+        await update.effective_message.reply_text(run_panel('--bot-adduser', password, days, text, 'any'))
         context.user_data['awaiting'] = None
     elif state == 'removeuser_password':
         await update.effective_message.reply_text(run_panel('--bot-removeuser', text))

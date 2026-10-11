@@ -1430,6 +1430,30 @@ do_badvpn() {
     press_enter
 }
 
+install_python_telegram() {
+    # Echo the interpreter that can import python-telegram-bot (>=20), or return 1.
+    local py
+    py=/usr/bin/python3
+    command -v "$py" >/dev/null 2>&1 || py=$(command -v python3 2>/dev/null)
+    [ -n "$py" ] || return 1
+    "$py" -c "import telegram, telegram.ext" >/dev/null 2>&1 && { echo "$py"; return 0; }
+    if ! "$py" -m pip --version >/dev/null 2>&1; then
+        apt-get update -qq >/dev/null 2>&1
+        apt-get install -y python3-pip -qq >/dev/null 2>&1
+    fi
+    if "$py" -m pip install --upgrade "python-telegram-bot>=20.0" >/dev/null 2>&1 \
+        && "$py" -c "import telegram, telegram.ext" >/dev/null 2>&1; then echo "$py"; return 0; fi
+    if "$py" -m pip install --upgrade --break-system-packages "python-telegram-bot>=20.0" >/dev/null 2>&1 \
+        && "$py" -c "import telegram, telegram.ext" >/dev/null 2>&1; then echo "$py"; return 0; fi
+    apt-get install -y python3-venv -qq >/dev/null 2>&1
+    if "$py" -m venv /opt/opudp-bot-venv >/dev/null 2>&1 \
+        && /opt/opudp-bot-venv/bin/pip install --upgrade "python-telegram-bot>=20.0" >/dev/null 2>&1 \
+        && /opt/opudp-bot-venv/bin/python -c "import telegram, telegram.ext" >/dev/null 2>&1; then
+        echo "/opt/opudp-bot-venv/bin/python"; return 0
+    fi
+    return 1
+}
+
 config_telegram() {
     while true; do
         clear
@@ -1450,22 +1474,43 @@ config_telegram() {
                mkdir -p "$(dirname "$TELEGRAM_TOKEN_FILE")"; echo "$token" > "$TELEGRAM_TOKEN_FILE"
                echo -e "  ${GRN}✔  Saved.${RST}"; press_enter ;;
             2) [ ! -f "$TELEGRAM_TOKEN_FILE" ] && { echo -e "\n  ${RED}✘  Set token first [1].${RST}"; press_enter; continue; }
-               python3 -c "import telegram" 2>/dev/null || { echo -e "  ${YLW}▸ Installing python-telegram-bot...${RST}"; pip3 install "python-telegram-bot>=20.0" --break-system-packages -q; }
-               [ ! -f "$BOT_SCRIPT" ] && { echo -e "  ${YLW}▸ Downloading bot script...${RST}"; wget -qO "$BOT_SCRIPT" "https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/opudp_bot.py"; chmod +x "$BOT_SCRIPT" 2>/dev/null; }
+               echo -e "  ${YLW}▸ Checking python-telegram-bot...${RST}"
+               local BOT_PY; BOT_PY=$(install_python_telegram)
+               if [ -z "$BOT_PY" ]; then
+                   echo -e "  ${RED}✘  Could not install python-telegram-bot.${RST}"
+                   echo -e "  ${DIM}  Manually: apt-get install -y python3-pip && python3 -m pip install --break-system-packages 'python-telegram-bot>=20.0'${RST}"
+                   press_enter; continue
+               fi
+               echo -e "  ${YLW}▸ Downloading bot script...${RST}"
+               wget -qO "$BOT_SCRIPT" "https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/opudp_bot.py" 2>/dev/null \
+                   || curl -fsSL -o "$BOT_SCRIPT" "https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/opudp_bot.py" 2>/dev/null
+               if [ ! -s "$BOT_SCRIPT" ]; then
+                   echo -e "  ${RED}✘  Failed to download bot script.${RST}"; press_enter; continue
+               fi
+               chmod +x "$BOT_SCRIPT" 2>/dev/null
                cat > "$BOT_SERVICE_FILE" <<EOF
 [Unit]
 Description=OP UDP Panel Telegram Bot
 After=network.target
 [Service]
-ExecStart=/usr/bin/python3 $BOT_SCRIPT
+Type=simple
+User=root
+WorkingDirectory=/etc/zivpn
+Environment=PYTHONUNBUFFERED=1
+ExecStart=$BOT_PY $BOT_SCRIPT
 Restart=always
 RestartSec=5
-User=root
 [Install]
 WantedBy=multi-user.target
 EOF
-               systemctl daemon-reload; systemctl enable opudp-bot 2>/dev/null; systemctl start  opudp-bot 2>/dev/null
-               systemctl is-active --quiet opudp-bot && echo -e "  ${GRN}✔  Bot started.${RST}" || echo -e "  ${RED}✘  Failed. Check [4].${RST}"
+               systemctl daemon-reload; systemctl enable opudp-bot 2>/dev/null; systemctl stop opudp-bot 2>/dev/null; systemctl start opudp-bot 2>/dev/null
+               sleep 2
+               if systemctl is-active --quiet opudp-bot; then
+                   echo -e "  ${GRN}✔  Bot started.${RST}"
+               else
+                   echo -e "  ${RED}✘  Failed. Recent log:${RST}"
+                   journalctl -u opudp-bot -n 10 --no-pager 2>/dev/null
+               fi
                press_enter ;;
             3) systemctl stop    opudp-bot 2>/dev/null; systemctl disable opudp-bot 2>/dev/null
                echo -e "\n  ${RED}■  Bot stopped.${RST}"; press_enter ;;

@@ -1,4 +1,3 @@
-cat > /usr/local/bin/onepesewa <<'PANEL_EOF'
 #!/bin/bash
 # ╔══════════════════════════════════════════════════════════════╗
 # ║         OP UDP PANEL  –  by @OfficialOnePesewa              ║
@@ -1743,8 +1742,277 @@ goodbye() {
 }
 
 # ══════════════════════════════════════════════════════════════
+#  TELEGRAM BOT CLI (non-interactive)
+#  Invoked as: onepesewa --bot-<command> [args]
+#  Prints plain text (no ANSI colours) so Telegram renders it cleanly.
+# ══════════════════════════════════════════════════════════════
+
+# Remove every line whose first "|" field equals $2 from file $1.
+bot_del_line() {
+    local file="$1" pass="$2" tmp
+    [ -f "$file" ] || return 0
+    tmp=$(mktemp 2>/dev/null) || return 0
+    awk -F'|' -v p="$pass" '$1 != p' "$file" > "$tmp" 2>/dev/null && mv "$tmp" "$file" 2>/dev/null
+}
+
+bot_add_user_record() {
+    # $1=password $2=expiry $3=quota $4=hwid
+    local finalpass="$1" exp="$2" quota="$3" hwid="$4" port
+    port=$(find_free_port)
+    [ -z "$port" ] && { echo "ERROR: No free ports."; return 1; }
+    mkdir -p "$(dirname "$CONFIG")"
+    [ -f "$CONFIG" ] || echo '{"auth":{"config":[]}}' > "$CONFIG"
+    jq --arg p "$finalpass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_tmp.json 2>/dev/null && mv /tmp/zivpn_tmp.json "$CONFIG"
+    echo "${finalpass}|${exp}|${quota}|${port}|${hwid}|0" >> "$DB"
+    echo "${finalpass}|0" >> "$USAGE_DB"
+    echo "${finalpass}|${hwid}" >> "$HWID_ALLOWED_DB"
+    setup_tracking "$port"
+    systemctl restart zivpn 2>/dev/null
+    echo "${port}"
+}
+
+bot_status() {
+    local svc users upt
+    systemctl is-active --quiet zivpn 2>/dev/null && svc="Online" || svc="Offline"
+    users=$([ -f "$DB" ] && grep -c . "$DB" 2>/dev/null || echo 0)
+    upt=$(uptime -p 2>/dev/null | sed 's/^up //')
+    echo "OP UDP Server Status"
+    echo "--------------------"
+    echo "Service : $svc"
+    echo "Users   : $users"
+    echo "IP      : ${IP:-N/A}"
+    echo "Location: ${CITY:-Unknown}, ${COUNTRY:-Unknown}"
+    echo "ISP     : ${ISP:-Unknown}"
+    echo "Uptime  : ${upt:-N/A}"
+}
+
+bot_list() {
+    if [ ! -f "$DB" ] || [ ! -s "$DB" ]; then echo "No users found."; return 0; fi
+    local today; today=$(date +%Y-%m-%d)
+    printf "%-22s %-11s %-8s %-6s %-7s\n" "PASSWORD" "EXPIRY" "QUOTA" "PORT" "STATUS"
+    while IFS='|' read -r pass exp quota port hwid used; do
+        [ -z "$pass" ] && continue
+        local status
+        if [[ "$exp" < "$today" ]]; then status="Expired"; else status="Active"; fi
+        [ -n "$(get_pause_remaining "$pass")" ] && status="Paused"
+        printf "%-22s %-11s %-8s %-6s %-7s\n" "${pass:0:22}" "$exp" "$quota" "$port" "$status"
+    done < "$DB"
+}
+
+bot_userstatus() {
+    local pass="$1" line
+    [ -z "$pass" ] && { echo "Usage: --bot-userstatus <password>"; return 2; }
+    line=$(awk -F'|' -v p="$pass" '$1 == p {print; exit}' "$DB" 2>/dev/null)
+    [ -z "$line" ] && { echo "Password not found."; return 1; }
+    IFS='|' read -r p expiry quota port hwid used <<< "$line"
+    local used_b="${used:-0}"
+    local quota_b; quota_b=$(quota_to_bytes "$quota")
+    local remain_b=$(( quota_b > used_b ? quota_b - used_b : 0 ))
+    local today; today=$(date +%Y-%m-%d)
+    local status
+    if [[ "$expiry" < "$today" ]]; then status="Expired"; else status="Active"; fi
+    [ -n "$(get_pause_remaining "$pass")" ] && status="Paused"
+    local days_left; days_left=$(( ( $(date -d "$expiry" +%s 2>/dev/null || echo 0) - $(date +%s) ) / 86400 ))
+    echo "Account Status"
+    echo "--------------"
+    echo "Password : $p"
+    echo "Expiry   : $expiry ($days_left days left)"
+    echo "Quota    : $quota"
+    echo "Used     : $(bytes_human "$used_b")"
+    echo "Remaining: $(bytes_human "$remain_b")"
+    echo "HWID     : $hwid"
+    echo "Port     : $port"
+    echo "Status   : $status"
+}
+
+bot_adduser() {
+    local pass="$1" days="$2" quota="$3" hwid="$4"
+    if [ -z "$pass" ] || [ -z "$days" ] || [ -z "$quota" ]; then
+        echo "Usage: --bot-adduser <password> <days> <quota> <hwid>"; return 2
+    fi
+    [[ ! "$days" =~ ^[0-9]+$ ]] && { echo "ERROR: Days must be a number."; return 1; }
+    [ -z "$hwid" ] && hwid="any"
+    awk -F'|' -v p="$pass" '$1 == p {found=1} END{exit !found}' "$DB" 2>/dev/null && \
+        { echo "ERROR: Password already exists."; return 1; }
+    local exp; exp=$(date -d "+${days} days" +%Y-%m-%d 2>/dev/null || date -v "+${days}d" +%Y-%m-%d)
+    local port; port=$(bot_add_user_record "$pass" "$exp" "$quota" "$hwid")
+    if [ -z "$port" ] || [[ "$port" == ERROR* ]]; then echo "${port:-ERROR: Failed to create user.}"; return 1; fi
+    echo "User created."
+    echo "Password: $pass"
+    echo "Expiry  : $exp"
+    echo "Quota   : $quota"
+    echo "Port    : $port"
+    echo "Server  : ${IP:-N/A}"
+}
+
+bot_removeuser() {
+    local pass="$1"
+    [ -z "$pass" ] && { echo "Usage: --bot-removeuser <password>"; return 2; }
+    local line; line=$(awk -F'|' -v p="$pass" '$1 == p {print; exit}' "$DB" 2>/dev/null)
+    [ -z "$line" ] && { echo "User not found."; return 1; }
+    local port; port=$(echo "$line" | cut -d'|' -f4)
+    [ -n "$port" ] && remove_tracking "$port"
+    [ -f "$CONFIG" ] && jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json 2>/dev/null && mv /tmp/zivpn_tmp.json "$CONFIG"
+    bot_del_line "$DB" "$pass"
+    bot_del_line "$USAGE_DB" "$pass"
+    bot_del_line "$CONN_LIMIT_FILE" "$pass"
+    bot_del_line "$IP_LIMIT_FILE" "$pass"
+    bot_del_line "$PAUSE_DB" "$pass"
+    bot_del_line "$HWID_ALLOWED_DB" "$pass"
+    rm -f "/etc/zivpn/iplist_${pass}.db" 2>/dev/null
+    systemctl restart zivpn 2>/dev/null
+    echo "User removed: $pass"
+}
+
+bot_renew() {
+    local pass="$1" days="$2"
+    if [ -z "$pass" ] || [ -z "$days" ]; then echo "Usage: --bot-renew <password> <days>"; return 2; fi
+    [[ ! "$days" =~ ^[0-9]+$ ]] && { echo "ERROR: Days must be a number."; return 1; }
+    local line; line=$(awk -F'|' -v p="$pass" '$1 == p {print; exit}' "$DB" 2>/dev/null)
+    [ -z "$line" ] && { echo "User not found."; return 1; }
+    local oldexp; oldexp=$(echo "$line" | cut -d'|' -f2)
+    local newexp; newexp=$(date -d "+${days} days" +%Y-%m-%d 2>/dev/null)
+    [ -z "$newexp" ] && { echo "ERROR: Date conversion failed."; return 1; }
+    awk -F'|' -v p="$pass" -v ne="$newexp" 'BEGIN{OFS="|"} $1==p {$2=ne} {print}' "$DB" > /tmp/zivpn_tmp.json 2>/dev/null && mv /tmp/zivpn_tmp.json "$DB"
+    if [ -f "$CONFIG" ] && command -v jq &>/dev/null; then
+        jq -e --arg p "$pass" '.auth.config | index($p) != null' "$CONFIG" >/dev/null 2>&1 || \
+            { jq --arg p "$pass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_tmp.json 2>/dev/null && mv /tmp/zivpn_tmp.json "$CONFIG"; }
+    fi
+    systemctl restart zivpn 2>/dev/null
+    echo "User renewed: $pass"
+    echo "Expiry: $oldexp -> $newexp (access restored)"
+}
+
+bot_resetbw() {
+    local pass="$1"
+    [ -z "$pass" ] && { echo "Usage: --bot-resetbw <password>"; return 2; }
+    if [ "$pass" = "ALL" ]; then
+        while IFS='|' read -r p e q port h u; do
+            [ -n "$port" ] && { iptables -Z "UDP_IN_${port}" 2>/dev/null; iptables -Z "UDP_OUT_${port}" 2>/dev/null; }
+        done < "$DB"
+        awk -F'|' 'BEGIN{OFS="|"} {$2=0; print}' "$USAGE_DB" > /tmp/u_tmp 2>/dev/null && mv /tmp/u_tmp "$USAGE_DB"
+        echo "All bandwidth counters reset."
+        return 0
+    fi
+    local line; line=$(awk -F'|' -v p="$pass" '$1 == p {print; exit}' "$DB" 2>/dev/null)
+    [ -z "$line" ] && { echo "User not found."; return 1; }
+    local port; port=$(echo "$line" | cut -d'|' -f4)
+    [ -n "$port" ] && { iptables -Z "UDP_IN_${port}" 2>/dev/null; iptables -Z "UDP_OUT_${port}" 2>/dev/null; }
+    awk -F'|' -v p="$pass" 'BEGIN{OFS="|"} $1==p {$2=0} {print}' "$USAGE_DB" > /tmp/u_tmp 2>/dev/null && mv /tmp/u_tmp "$USAGE_DB"
+    echo "Bandwidth reset for: $pass"
+}
+
+bot_cleanup() {
+    if [ ! -f "$DB" ] || [ ! -s "$DB" ]; then echo "No users to clean."; return 0; fi
+    local today removed=0
+    today=$(date +%Y-%m-%d)
+    while IFS='|' read -r pass exp quota port hwid used; do
+        [ -z "$pass" ] && continue
+        if [[ "$exp" < "$today" ]]; then
+            [ -n "$port" ] && remove_tracking "$port"
+            [ -f "$CONFIG" ] && jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json 2>/dev/null && mv /tmp/zivpn_tmp.json "$CONFIG"
+            bot_del_line "$DB" "$pass"
+            bot_del_line "$USAGE_DB" "$pass"
+            bot_del_line "$CONN_LIMIT_FILE" "$pass"
+            bot_del_line "$IP_LIMIT_FILE" "$pass"
+            bot_del_line "$PAUSE_DB" "$pass"
+            bot_del_line "$HWID_ALLOWED_DB" "$pass"
+            rm -f "/etc/zivpn/iplist_${pass}.db" 2>/dev/null
+            removed=$((removed + 1))
+        fi
+    done < <(cat "$DB")
+    [ "$removed" -gt 0 ] && systemctl restart zivpn 2>/dev/null
+    echo "Removed $removed expired user(s)."
+}
+
+bot_trial() {
+    local minutes="$1"
+    [[ "$minutes" =~ ^[0-9]+$ ]] || { echo "ERROR: Trial minutes must be a number."; return 1; }
+    [ "$minutes" -lt 1 ] && { echo "ERROR: Minimum 1 minute."; return 1; }
+    local trialquota="100MB"
+    local exp_days=$(( (minutes + 1439) / 1440 )); [ "$exp_days" -lt 1 ] && exp_days=1
+    local hwid finalpass port exp
+    hwid="trial_$(openssl rand -hex 4)"
+    finalpass=$(openssl rand -base64 32 | tr -d '/=+' | head -c32)
+    exp=$(date -d "+${exp_days} days" +%Y-%m-%d 2>/dev/null || date -v "+${exp_days}d" +%Y-%m-%d)
+    port=$(bot_add_user_record "$finalpass" "$exp" "$trialquota" "$hwid")
+    if [ -z "$port" ] || [[ "$port" == ERROR* ]]; then echo "${port:-ERROR: Failed to create trial user.}"; return 1; fi
+    command -v at &>/dev/null || apt-get install -y at -qq >/dev/null 2>&1
+    systemctl enable --now atd >/dev/null 2>&1 || systemctl enable --now at >/dev/null 2>&1 || service atd start >/dev/null 2>&1
+    at now + ${minutes} minutes >/dev/null 2>&1 <<ATCMD
+[ -f "$CONFIG" ] && jq --arg p "${finalpass}" '.auth.config -= [\$p]' "$CONFIG" > /tmp/zivpn_trial_${port}.json && mv /tmp/zivpn_trial_${port}.json "$CONFIG"
+sed -i '/^${finalpass}|/d' "$DB" 2>/dev/null
+sed -i '/^${finalpass}|/d' "$USAGE_DB" 2>/dev/null
+sed -i '/^${finalpass}|/d' "$CONN_LIMIT_FILE" 2>/dev/null
+sed -i '/^${finalpass}|/d' "$IP_LIMIT_FILE" 2>/dev/null
+sed -i '/^${finalpass}|/d' "$PAUSE_DB" 2>/dev/null
+sed -i '/^${finalpass}|/d' "$HWID_ALLOWED_DB" 2>/dev/null
+rm -f "/etc/zivpn/iplist_${finalpass}.db" 2>/dev/null
+iptables -D INPUT  -p udp --dport ${port} -j UDP_IN_${port}  2>/dev/null
+iptables -D OUTPUT -p udp --sport ${port} -j UDP_OUT_${port} 2>/dev/null
+iptables -F UDP_IN_${port}  2>/dev/null; iptables -X UDP_IN_${port}  2>/dev/null
+iptables -F UDP_OUT_${port} 2>/dev/null; iptables -X UDP_OUT_${port} 2>/dev/null
+iptables -D INPUT -p udp --dport ${port} -j ACCEPT 2>/dev/null
+iptables -t nat -D PREROUTING -p udp --dport ${port} -j DNAT --to-destination :5667 2>/dev/null
+systemctl restart zivpn 2>/dev/null
+ATCMD
+    echo "Trial user created."
+    echo "Password: $finalpass"
+    echo "Duration: ${minutes} minute(s)"
+    echo "Expiry  : $exp (auto-deleted)"
+    echo "Quota   : $trialquota"
+    echo "Port    : $port"
+    echo "Server  : ${IP:-N/A}"
+}
+
+bot_bbr() {
+    apt-get install -y curl -qq 2>/dev/null
+    bash <(curl -4 -s "https://raw.githubusercontent.com/opiran-club/VPS-Optimizer/main/optimizer.sh" --ipv4) 2>&1 | tail -20
+    echo "BBR optimization finished."
+}
+
+bot_badvpn() {
+    { wget -qN "https://raw.githubusercontent.com/opiran-club/VPS-Optimizer/main/Install/udpgw.sh" && bash udpgw.sh; } 2>&1 | tail -20
+    echo "BadVPN install finished."
+}
+
+bot_cli_main() {
+    fetch_geo >/dev/null 2>&1
+    case "$1" in
+        --bot-status)      bot_status ;;
+        --bot-list)        bot_list ;;
+        --bot-userstatus)  bot_userstatus "$2" ;;
+        --bot-userinfo)    bot_userstatus "$2" ;;
+        --bot-adduser)     bot_adduser "$2" "$3" "$4" "$5" ;;
+        --bot-removeuser)  bot_removeuser "$2" ;;
+        --bot-renew)       bot_renew "$2" "$3" ;;
+        --bot-resetbw)     bot_resetbw "$2" ;;
+        --bot-trial)       bot_trial "$2" ;;
+        --bot-cleanup)     bot_cleanup ;;
+        --bot-bbr)         bot_bbr ;;
+        --bot-badvpn)      bot_badvpn ;;
+        --bot-ipmon_on)    enable_ip_monitor   >/dev/null 2>&1; echo "IP limit monitor: $(systemctl is-active opudp-ipmon 2>/dev/null)" ;;
+        --bot-ipmon_off)   disable_ip_monitor  >/dev/null 2>&1; echo "IP limit monitor disabled." ;;
+        --bot-bwmon_on)    enable_bw_monitor   >/dev/null 2>&1; echo "Bandwidth monitor: $(systemctl is-active opudp-bwmon 2>/dev/null)" ;;
+        --bot-bwmon_off)   disable_bw_monitor  >/dev/null 2>&1; echo "Bandwidth monitor disabled." ;;
+        --bot-enforce_on)  enable_enforcement  >/dev/null 2>&1; echo "Connection enforcement: $( [ -f "$ENFORCE_CRON" ] && echo enabled || echo failed )" ;;
+        --bot-enforce_off) disable_enforcement >/dev/null 2>&1; echo "Connection enforcement disabled." ;;
+        --bot-hwid_on)     enable_hwid_lock    >/dev/null 2>&1; echo "HWID lock: $(systemctl is-active opudp-hwid-enforcer 2>/dev/null)" ;;
+        --bot-hwid_off)    disable_hwid_lock   >/dev/null 2>&1; echo "HWID lock disabled." ;;
+        --bot-pausemon_on) enable_pause_monitor >/dev/null 2>&1; echo "Pause monitor: $(systemctl is-active opudp-pausemon 2>/dev/null)" ;;
+        --bot-pausemon_off) disable_pause_monitor >/dev/null 2>&1; echo "Pause monitor disabled." ;;
+        *) echo "Unknown bot command: $1"; return 1 ;;
+    esac
+}
+
+# ══════════════════════════════════════════════════════════════
 #  MAIN LOOP
 # ══════════════════════════════════════════════════════════════
+if [ $# -gt 0 ] && [[ "$1" == --bot-* ]]; then
+    bot_cli_main "$@"
+    exit $?
+fi
+
 fetch_geo
 
 while true; do
@@ -1761,7 +2029,3 @@ while true; do
         *)  echo -e "\n  ${RED}✘  Invalid option.${RST}"; sleep 1 ;;
     esac
 done
-PANEL_EOF
-
-chmod +x /usr/local/bin/onepesewa
-ln -sf /usr/local/bin/onepesewa /usr/local/bin/opudp 2>/dev/null

@@ -30,7 +30,7 @@ onepesewa      # or the short alias:  opudp
 ## What it installs
 
 - **ZIVPN v1.4.9** UDP server → `/usr/local/bin/zivpn` (systemd service `zivpn`)
-- **OP UDP Panel v2.6.0** → `/usr/local/bin/onepesewa` (alias `onepesewa` / `opudp`)
+- **OP UDP Panel v2.7.1** → `/usr/local/bin/onepesewa` (alias `onepesewa` / `opudp`)
 - Self-signed TLS certificate (RSA 4096) + tuned UDP kernel buffers
 - Firewall + DNAT rules for the UDP port range (`6000-19999` → `5667`)
 - Optional background monitors: pause/resume, IP limit, bandwidth, connection enforcement

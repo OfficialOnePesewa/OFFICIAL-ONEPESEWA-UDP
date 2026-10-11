@@ -2,7 +2,7 @@ cat > /tmp/opudp_install.sh <<'SCRIPT'
 #!/bin/bash
 # ╔══════════════════════════════════════════════════════════════╗
 # ║     OFFICIAL ONEPESEWA UDP Installer                        ║
-# ║     Debian/Ubuntu  –  ZIVPN v1.4.9  +  Panel v2.6.0        ║
+# ║     Debian/Ubuntu  –  ZIVPN v1.4.9  +  Panel v2.7.1        ║
 # ║     @OfficialOnePesewa                                      ║
 # ╚══════════════════════════════════════════════════════════════╝
 
@@ -16,7 +16,7 @@ BOLD='\e[1m'    DIM='\e[2m'
 
 ADMIN_HANDLE="@OfficialOnePesewa"
 TG_CHANNEL="https://t.me/officialonepesewatech"
-PANEL_VERSION="2.6.0"
+PANEL_VERSION="2.7.1"
 
 print_logo() {
     echo ""
@@ -231,7 +231,7 @@ else
     warn "ZIVPN failed to start – check: journalctl -u zivpn -n 30"
 fi
 
-# Step 7 – Download OPUDP Panel (v2.6.0)
+# Step 7 – Download OPUDP Panel (v2.7.1)
 step 6 7 "Installing OPUDP Panel"
 PANEL_URL="https://raw.githubusercontent.com/OfficialOnePesewa/OFFICIAL-ONEPESEWA-UDP/main/onepesewa"
 if wget -qO /usr/local/bin/onepesewa "$PANEL_URL"; then

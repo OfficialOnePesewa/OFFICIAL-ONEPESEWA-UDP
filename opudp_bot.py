@@ -183,7 +183,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state == 'adduser_password':
         context.user_data['adduser_password'] = text
         context.user_data['awaiting'] = 'adduser_days'
-        await update.effective_message.reply_text("Enter validity (days):")
+        await update.effective_message.reply_text("Enter duration (e.g. 2d4h30m):")
     elif state == 'adduser_days':
         context.user_data['adduser_days'] = text
         context.user_data['awaiting'] = 'adduser_quota'
@@ -206,7 +206,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif state == 'renew_password':
         context.user_data['renew_password'] = text
         context.user_data['awaiting'] = 'renew_days'
-        await update.effective_message.reply_text("Enter additional days to add:")
+        await update.effective_message.reply_text("Enter duration to add (e.g. 2d4h30m):")
     elif state == 'renew_days':
         password = context.user_data.get('renew_password', '')
         await update.effective_message.reply_text(run_panel('--bot-renew', password, text))

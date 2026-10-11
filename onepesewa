@@ -343,10 +343,63 @@ quota_to_bytes() {
 }
 
 # ══════════════════════════════════════════════════════════════
+#  DURATION & COUNTDOWN HELPERS
+# ══════════════════════════════════════════════════════════════
+# Accepts 2d4h30m / 2d 4h 30m / 2d,4h,30m. A bare number means days.
+dur_to_seconds() {
+    local s; s=$(echo "$1" | tr 'A-Z' 'a-z' | tr -d ' ,')
+    [ -z "$s" ] && { echo 0; return; }
+    [[ "$s" =~ ^[0-9]+$ ]] && { echo $(( s * 86400 )); return; }
+    local total=0 matched=0
+    [[ "$s" =~ ([0-9]+)d ]] && { total=$(( total + BASH_REMATCH[1]*86400 )); matched=1; }
+    [[ "$s" =~ ([0-9]+)h ]] && { total=$(( total + BASH_REMATCH[1]*3600 ));  matched=1; }
+    [[ "$s" =~ ([0-9]+)m ]] && { total=$(( total + BASH_REMATCH[1]*60 ));    matched=1; }
+    [[ "$s" =~ ([0-9]+)s ]] && { total=$(( total + BASH_REMATCH[1] ));       matched=1; }
+    [ "$matched" -eq 1 ] && echo "$total" || echo 0
+}
+
+# Epoch for an expiry value; legacy date-only entries expire at end of that day.
+expiry_epoch() {
+    local exp="$1"
+    [ -z "$exp" ] && { echo 0; return; }
+    if [[ "$exp" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then
+        date -d "$exp 23:59:59" +%s 2>/dev/null || echo 0
+    else
+        date -d "$exp" +%s 2>/dev/null || echo 0
+    fi
+}
+
+expiry_remaining_seconds() {
+    local e; e=$(expiry_epoch "$1")
+    [ "$e" -le 0 ] && { echo 0; return; }
+    local now; now=$(date +%s)
+    local d=$(( e - now )); [ "$d" -lt 0 ] && d=0
+    echo "$d"
+}
+
+# Countdown like 2d,4h,30m (largest unit first).
+expiry_human() {
+    local diff; diff=$(expiry_remaining_seconds "$1")
+    local dd=$(( diff/86400 )) hh=$(( (diff%86400)/3600 )) mm=$(( (diff%3600)/60 ))
+    local out=""
+    [ "$dd" -gt 0 ] && out="${dd}d"
+    [ "$hh" -gt 0 ] && out="${out:+$out,}${hh}h"
+    [ "$mm" -gt 0 ] && out="${out:+$out,}${mm}m"
+    [ -z "$out" ] && out="0m"
+    echo "$out"
+}
+
+is_expired() {
+    local e; e=$(expiry_epoch "$1")
+    [ "$e" -le 0 ] && return 1
+    [ "$(date +%s)" -gt "$e" ]
+}
+
+# ══════════════════════════════════════════════════════════════
 #  ADD USER (with optional password, ip & conn limits)
 # ══════════════════════════════════════════════════════════════
 add_user_core() {
-    local basepass="$1" days="$2" quota="$3" hwid="$4" ip_limit="$5" conn_limit="$6" userpass="$7"
+    local basepass="$1" duration="$2" quota="$3" hwid="$4" ip_limit="$5" conn_limit="$6" userpass="$7"
     local finalpass
     if [ -n "$userpass" ]; then
         finalpass="$userpass"
@@ -354,8 +407,11 @@ add_user_core() {
     else
         finalpass=$(openssl rand -base64 32 | tr -d '/=+' | head -c32)
     fi
+    local secs; secs=$(dur_to_seconds "$duration")
+    [ "$secs" -le 0 ] && { echo "ERROR: Invalid duration (use e.g. 2d4h30m)."; return 1; }
     local exp port
-    exp=$(date -d "+${days} days" +%Y-%m-%d 2>/dev/null || date -v "+${days}d" +%Y-%m-%d)
+    exp=$(date -d "+${secs} seconds" +"%Y-%m-%d %H:%M:%S" 2>/dev/null)
+    [ -z "$exp" ] && { echo "ERROR: Date conversion failed."; return 1; }
     port=$(find_free_port)
     [ -z "$port" ] && { echo "ERROR: No free ports"; return 1; }
     mkdir -p "$(dirname "$CONFIG")"
@@ -944,11 +1000,11 @@ do_list() {
     local today; today=$(date +%Y-%m-%d)
     echo -e "  ${WHT}╔══════════════════════════════════════════════════════════════════╗${RST}"
     printf  "  ${WHT}║${RST}  ${BOLD}%-24s %-12s %-8s %-6s %-8s %-8s${RST}  ${WHT}║${RST}\n" \
-            "PASSWORD" "EXPIRY" "QUOTA" "PORT" "STATUS" "PAUSED"
+            "PASSWORD" "REMAINING" "QUOTA" "PORT" "STATUS" "PAUSED"
     echo -e "  ${WHT}╠══════════════════════════════════════════════════════════════════╣${RST}"
     while IFS='|' read -r pass exp quota port hwid used; do
         local color status paused=""
-        if [[ "$exp" < "$today" ]]; then color="$RED"; status="Expired"
+        if is_expired "$exp"; then color="$RED"; status="Expired"
         else color="$GRN"; status="Active"; fi
         local rem=$(get_pause_remaining "$pass")
         if [ -n "$rem" ]; then
@@ -957,7 +1013,7 @@ do_list() {
             color="$MAG"
         fi
         printf  "  ${WHT}║${RST}  %-24s %-12s %-8s %-6s ${color}%-8s${RST} %-8s  ${WHT}║${RST}\n" \
-                "${pass:0:24}" "$exp" "$quota" "$port" "$status" "$paused"
+                "${pass:0:24}" "$(expiry_human "$exp")" "$quota" "$port" "$status" "$paused"
     done < "$DB"
     echo -e "  ${WHT}╚══════════════════════════════════════════════════════════════════╝${RST}"
     echo ""
@@ -971,24 +1027,25 @@ do_add_user() {
     echo -e "  ${YLW}╠══════════════════════════════════════════════════════════════╣${RST}"
     echo -ne "  ${YLW}║${RST}  ${GRN}Username / Identifier         :${RST} "; read -r basepass
     echo -ne "  ${YLW}║${RST}  ${GRN}Password (empty=random)       :${RST} "; read -r userpass
-    echo -ne "  ${YLW}║${RST}  ${GRN}Validity (days)               :${RST} "; read -r days
+    echo -ne "  ${YLW}║${RST}  ${GRN}Duration (e.g. 2d4h30m)       :${RST} "; read -r duration
     echo -ne "  ${YLW}║${RST}  ${GRN}Data Quota (e.g. 10GB/500MB)  :${RST} "; read -r quota
     echo -ne "  ${YLW}║${RST}  ${GRN}Client HWID (from ZIVPN app)  :${RST} "; read -r hwid
     echo -ne "  ${YLW}║${RST}  ${GRN}Unique IP limit (0=unlimited)  :${RST} "; read -r ip_limit
     echo -ne "  ${YLW}║${RST}  ${GRN}Conn limit (conc sessions,0) :${RST} "; read -r conn_limit
     echo -e "  ${YLW}╚══════════════════════════════════════════════════════════════╝${RST}"
 
-    [[ -z "$basepass" || -z "$days" || -z "$quota" || -z "$hwid" ]] && {
+    [[ -z "$basepass" || -z "$duration" || -z "$quota" || -z "$hwid" ]] && {
         echo -e "\n  ${RED}✘  All fields required.${RST}"; press_enter; return
     }
-    [[ ! "$days" =~ ^[0-9]+$ ]] && {
-        echo -e "\n  ${RED}✘  Days must be a number.${RST}"; press_enter; return
+    local dsecs; dsecs=$(dur_to_seconds "$duration")
+    [ "$dsecs" -le 0 ] && {
+        echo -e "\n  ${RED}✘  Invalid duration. Use e.g. 2d4h30m.${RST}"; press_enter; return
     }
     [[ ! "$ip_limit" =~ ^[0-9]+$ ]] && ip_limit=0
     [[ ! "$conn_limit" =~ ^[0-9]+$ ]] && conn_limit=0
 
     echo -e "\n  ${DIM}⏳ Creating user...${RST}"
-    local result; result=$(add_user_core "$basepass" "$days" "$quota" "$hwid" "$ip_limit" "$conn_limit" "$userpass")
+    local result; result=$(add_user_core "$basepass" "$duration" "$quota" "$hwid" "$ip_limit" "$conn_limit" "$userpass")
 
     if [[ "$result" == SUCCESS* ]]; then
         IFS='|' read -r _ finalpass exp port qt <<< "$result"
@@ -1005,7 +1062,8 @@ do_add_user() {
         printf  "  ${GRN}║${RST}      ${WHT}HWID      :${RST} %-42s${GRN}║${RST}\n" "Auto-sent by app"
         echo -e "  ${GRN}║${RST}      Tap ${GRN}APPLY${RST} → ${GRN}CONNECT${RST}                                  ${GRN}║${RST}"
         echo -e "  ${GRN}╠══════════════════════════════════════════════════════════════╣${RST}"
-        printf  "  ${GRN}║${RST}  ${YLW}⏳  Expiry  :${RST} ${WHT}%-49s${RST}${GRN}║${RST}\n" "$exp  ($days days)"
+        printf  "  ${GRN}║${RST}  ${YLW}⏳  Expiry  :${RST} ${WHT}%-49s${RST}${GRN}║${RST}\n" "$exp"
+        printf  "  ${GRN}║${RST}  ${YLW}⏳  Runs for:${RST} ${WHT}%-49s${RST}${GRN}║${RST}\n" "$(expiry_human "$exp")"
         printf  "  ${GRN}║${RST}  ${YLW}📊  Quota   :${RST} ${WHT}%-49s${RST}${GRN}║${RST}\n" "$qt"
         printf  "  ${GRN}║${RST}  ${YLW}🔒  HWID    :${RST} ${WHT}%-49s${RST}${GRN}║${RST}\n" "$hwid"
         printf  "  ${GRN}║${RST}  ${YLW}🔌  Port    :${RST} ${WHT}%-49s${RST}${GRN}║${RST}\n" "$port"
@@ -1073,11 +1131,12 @@ do_renew_user() {
     local oldexp; oldexp=$(echo "$line" | cut -d'|' -f2)
     local today; today=$(date +%Y-%m-%d)
     echo -e "  ${DIM}Current expiry: ${WHT}${oldexp}${RST}"
-    echo -ne "  ${GRN}Add how many days (from today): ${RST}"; read -r days
-    [[ ! "$days" =~ ^[0-9]+$ ]] && { echo -e "  ${RED}✘  Invalid.${RST}"; press_enter; return; }
-    # Always renew from today — adding days to an already-expired date would
+    echo -ne "  ${GRN}Add duration (e.g. 2d4h30m): ${RST}"; read -r days
+    local dsecs; dsecs=$(dur_to_seconds "$days")
+    [ "$dsecs" -le 0 ] && { echo -e "  ${RED}✘  Invalid duration.${RST}"; press_enter; return; }
+    # Always renew from today — adding to an already-expired date would
     # produce a new expiry still in the past.
-    local newexp; newexp=$(date -d "+${days} days" +%Y-%m-%d 2>/dev/null)
+    local newexp; newexp=$(date -d "+${dsecs} seconds" +"%Y-%m-%d %H:%M:%S" 2>/dev/null)
     [ -z "$newexp" ] && { echo -e "  ${RED}✘  Date error.${RST}"; press_enter; return; }
     awk -F'|' -v p="$pass" -v ne="$newexp" 'BEGIN{OFS="|"} $1==p{$2=ne} {print}' "$DB" > /tmp/db_tmp && mv /tmp/db_tmp "$DB"
     # Restore password to ZiVPN auth list in case it was removed (e.g. by
@@ -1089,7 +1148,7 @@ do_renew_user() {
         fi
     fi
     systemctl restart zivpn 2>/dev/null
-    echo -e "\n  ${GRN}✔  Expiry: ${WHT}${oldexp}${GRN} → ${WHT}${newexp}${GRN}  (access restored)${RST}"
+    echo -e "\n  ${GRN}✔  Expiry: ${WHT}${oldexp}${GRN} → ${WHT}${newexp}${GRN}  (runs for $(expiry_human "$newexp"))${RST}"
     press_enter
 }
 
@@ -1100,7 +1159,7 @@ do_cleanup() {
     }
     local today removed=0; today=$(date +%Y-%m-%d)
     while IFS='|' read -r pass expiry quota port hwid used; do
-        if [[ "$expiry" < "$today" ]]; then
+        if is_expired "$expiry"; then
             echo -e "  ${DIM}  → Removing: ${pass}  (expired: ${expiry})${RST}"
             [ -n "$port" ] && remove_tracking "$port"
             [ -f "$CONFIG" ] && jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
@@ -1144,7 +1203,7 @@ do_bw_expiry() {
     }
     local today; today=$(date +%Y-%m-%d)
     echo -e "  ${WHT}╔═══════════════════════════════════════════════════════════════════╗${RST}"
-    printf  "  ${WHT}║${RST}  ${BOLD}%-24s %-12s %-8s %-10s %-10s %-7s${RST}  ${WHT}║${RST}\n" "USER" "EXPIRY" "QUOTA" "USED" "REMAIN" "STATUS"
+    printf  "  ${WHT}║${RST}  ${BOLD}%-24s %-12s %-8s %-10s %-10s %-7s${RST}  ${WHT}║${RST}\n" "USER" "TIME LEFT" "QUOTA" "USED" "REMAIN" "STATUS"
     echo -e "  ${WHT}╠═══════════════════════════════════════════════════════════════════╣${RST}"
     while IFS='|' read -r pass exp quota port hwid used; do
         used_b="${used:-0}"
@@ -1152,10 +1211,10 @@ do_bw_expiry() {
         remain_b=$(( quota_b > used_b ? quota_b - used_b : 0 ))
         used_h=$(bytes_human "$used_b")
         remain_h=$(bytes_human "$remain_b")
-        if [[ "$exp" < "$today" ]]; then status="Expired"; color="$RED"
+        if is_expired "$exp"; then status="Expired"; color="$RED"
         elif [ "$quota_b" -gt 0 ] && [ "$used_b" -ge "$quota_b" ]; then status="Quota!"; color="$RED"
         else status="OK"; color="$GRN"; fi
-        printf "  ${WHT}║${RST}  %-24s %-12s %-8s %-10s %-10s ${color}%-7s${RST}  ${WHT}║${RST}\n" "${pass:0:24}" "$exp" "$quota" "$used_h" "$remain_h" "$status"
+        printf "  ${WHT}║${RST}  %-24s %-12s %-8s %-10s %-10s ${color}%-7s${RST}  ${WHT}║${RST}\n" "${pass:0:24}" "$(expiry_human "$exp")" "$quota" "$used_h" "$remain_h" "$status"
     done < "$DB"
     echo -e "  ${WHT}╚═══════════════════════════════════════════════════════════════════╝${RST}"
     echo ""
@@ -1542,8 +1601,9 @@ do_user_status() {
     local used_b="${used:-0}"
     local quota_b; quota_b=$(quota_to_bytes "$quota")
     local remain_b=$(( quota_b > used_b ? quota_b - used_b : 0 ))
-    local days_left; days_left=$(( ( $(date -d "$expiry" +%s 2>/dev/null || echo 0) - $(date +%s) ) / 86400 ))
+    local remain_s; remain_s=$(expiry_remaining_seconds "$expiry")
     local sessions; sessions=$(ss -un state established 2>/dev/null | grep -c ":${port} " || echo 0)
+    local exp_color; [ "$remain_s" -le 259200 ] 2>/dev/null && exp_color="$RED" || exp_color="$GRN"
     local conn_limit; conn_limit=$(grep "^${pass}|" "$CONN_LIMIT_FILE" 2>/dev/null | cut -d'|' -f2)
     [ -z "$conn_limit" ] && conn_limit="Unlimited"
     local ip_limit; ip_limit=$(grep "^${pass}|" "$IP_LIMIT_FILE" 2>/dev/null | cut -d'|' -f2)
@@ -1553,7 +1613,6 @@ do_user_status() {
     local pause_str=""
     if [ -n "$pause_rem" ]; then pause_str="⏸ PAUSED - $(pause_remaining_human "$pause_rem") remaining"
     else pause_str="▶ Active"; fi
-    local exp_color; [ "$days_left" -le 3 ] 2>/dev/null && exp_color="$RED" || exp_color="$GRN"
     local allowed_hwid=$(grep "^${pass}|" "$HWID_ALLOWED_DB" 2>/dev/null | cut -d'|' -f2)
     [ -z "$allowed_hwid" ] && allowed_hwid="Not locked"
     echo ""
@@ -1561,7 +1620,7 @@ do_user_status() {
     echo -e "  ${CYN}║${RST}  ${CYN}${BOLD}📊  ACCOUNT STATUS${RST}                                       ${CYN}║${RST}"
     echo -e "  ${CYN}╠══════════════════════════════════════════════════════════════╣${RST}"
     printf  "  ${CYN}║${RST}  ${YLW}🔑  Password   :${RST}  ${WHT}%-42s${RST}${CYN}║${RST}\n" "$p"
-    printf  "  ${CYN}║${RST}  ${YLW}📅  Expiry     :${RST}  ${exp_color}%-42s${RST}${CYN}║${RST}\n" "$expiry  ($days_left days left)"
+    printf  "  ${CYN}║${RST}  ${YLW}📅  Expiry     :${RST}  ${exp_color}%-42s${RST}${CYN}║${RST}\n" "$expiry  ($(expiry_human "$expiry") left)"
     printf  "  ${CYN}║${RST}  ${YLW}📊  Quota      :${RST}  ${WHT}%-42s${RST}${CYN}║${RST}\n" "$quota"
     printf  "  ${CYN}║${RST}  ${YLW}📈  Used       :${RST}  ${WHT}%-42s${RST}${CYN}║${RST}\n" "$(bytes_human $used_b)"
     printf  "  ${CYN}║${RST}  ${YLW}📉  Remaining  :${RST}  ${WHT}%-42s${RST}${CYN}║${RST}\n" "$(bytes_human $remain_b)"
@@ -1833,14 +1892,13 @@ bot_status() {
 
 bot_list() {
     if [ ! -f "$DB" ] || [ ! -s "$DB" ]; then echo "No users found."; return 0; fi
-    local today; today=$(date +%Y-%m-%d)
-    printf "%-22s %-11s %-8s %-6s %-7s\n" "PASSWORD" "EXPIRY" "QUOTA" "PORT" "STATUS"
+    printf "%-22s %-12s %-8s %-6s %-7s\n" "PASSWORD" "REMAINING" "QUOTA" "PORT" "STATUS"
     while IFS='|' read -r pass exp quota port hwid used; do
         [ -z "$pass" ] && continue
         local status
-        if [[ "$exp" < "$today" ]]; then status="Expired"; else status="Active"; fi
+        if is_expired "$exp"; then status="Expired"; else status="Active"; fi
         [ -n "$(get_pause_remaining "$pass")" ] && status="Paused"
-        printf "%-22s %-11s %-8s %-6s %-7s\n" "${pass:0:22}" "$exp" "$quota" "$port" "$status"
+        printf "%-22s %-12s %-8s %-6s %-7s\n" "${pass:0:22}" "$(expiry_human "$exp")" "$quota" "$port" "$status"
     done < "$DB"
 }
 
@@ -1853,15 +1911,13 @@ bot_userstatus() {
     local used_b="${used:-0}"
     local quota_b; quota_b=$(quota_to_bytes "$quota")
     local remain_b=$(( quota_b > used_b ? quota_b - used_b : 0 ))
-    local today; today=$(date +%Y-%m-%d)
     local status
-    if [[ "$expiry" < "$today" ]]; then status="Expired"; else status="Active"; fi
+    if is_expired "$expiry"; then status="Expired"; else status="Active"; fi
     [ -n "$(get_pause_remaining "$pass")" ] && status="Paused"
-    local days_left; days_left=$(( ( $(date -d "$expiry" +%s 2>/dev/null || echo 0) - $(date +%s) ) / 86400 ))
     echo "Account Status"
     echo "--------------"
     echo "Password : $p"
-    echo "Expiry   : $expiry ($days_left days left)"
+    echo "Expiry   : $expiry ($(expiry_human "$expiry") left)"
     echo "Quota    : $quota"
     echo "Used     : $(bytes_human "$used_b")"
     echo "Remaining: $(bytes_human "$remain_b")"
@@ -1871,20 +1927,23 @@ bot_userstatus() {
 }
 
 bot_adduser() {
-    local pass="$1" days="$2" quota="$3" hwid="$4"
-    if [ -z "$pass" ] || [ -z "$days" ] || [ -z "$quota" ]; then
-        echo "Usage: --bot-adduser <password> <days> <quota> <hwid>"; return 2
+    local pass="$1" duration="$2" quota="$3" hwid="$4"
+    if [ -z "$pass" ] || [ -z "$duration" ] || [ -z "$quota" ]; then
+        echo "Usage: --bot-adduser <password> <duration> <quota> <hwid>"; return 2
     fi
-    [[ ! "$days" =~ ^[0-9]+$ ]] && { echo "ERROR: Days must be a number."; return 1; }
+    local dsecs; dsecs=$(dur_to_seconds "$duration")
+    [ "$dsecs" -le 0 ] && { echo "ERROR: Invalid duration (use e.g. 2d4h30m)."; return 1; }
     [ -z "$hwid" ] && hwid="any"
     awk -F'|' -v p="$pass" '$1 == p {found=1} END{exit !found}' "$DB" 2>/dev/null && \
         { echo "ERROR: Password already exists."; return 1; }
-    local exp; exp=$(date -d "+${days} days" +%Y-%m-%d 2>/dev/null || date -v "+${days}d" +%Y-%m-%d)
+    local exp; exp=$(date -d "+${dsecs} seconds" +"%Y-%m-%d %H:%M:%S" 2>/dev/null)
+    [ -z "$exp" ] && { echo "ERROR: Date conversion failed."; return 1; }
     local port; port=$(bot_add_user_record "$pass" "$exp" "$quota" "$hwid")
     if [ -z "$port" ] || [[ "$port" == ERROR* ]]; then echo "${port:-ERROR: Failed to create user.}"; return 1; fi
     echo "User created."
     echo "Password: $pass"
     echo "Expiry  : $exp"
+    echo "Runs for: $(expiry_human "$exp")"
     echo "Quota   : $quota"
     echo "Port    : $port"
     echo "Server  : ${IP:-N/A}"
@@ -1910,13 +1969,14 @@ bot_removeuser() {
 }
 
 bot_renew() {
-    local pass="$1" days="$2"
-    if [ -z "$pass" ] || [ -z "$days" ]; then echo "Usage: --bot-renew <password> <days>"; return 2; fi
-    [[ ! "$days" =~ ^[0-9]+$ ]] && { echo "ERROR: Days must be a number."; return 1; }
+    local pass="$1" duration="$2"
+    if [ -z "$pass" ] || [ -z "$duration" ]; then echo "Usage: --bot-renew <password> <duration>"; return 2; fi
+    local dsecs; dsecs=$(dur_to_seconds "$duration")
+    [ "$dsecs" -le 0 ] && { echo "ERROR: Invalid duration (use e.g. 2d4h30m)."; return 1; }
     local line; line=$(awk -F'|' -v p="$pass" '$1 == p {print; exit}' "$DB" 2>/dev/null)
     [ -z "$line" ] && { echo "User not found."; return 1; }
     local oldexp; oldexp=$(echo "$line" | cut -d'|' -f2)
-    local newexp; newexp=$(date -d "+${days} days" +%Y-%m-%d 2>/dev/null)
+    local newexp; newexp=$(date -d "+${dsecs} seconds" +"%Y-%m-%d %H:%M:%S" 2>/dev/null)
     [ -z "$newexp" ] && { echo "ERROR: Date conversion failed."; return 1; }
     awk -F'|' -v p="$pass" -v ne="$newexp" 'BEGIN{OFS="|"} $1==p {$2=ne} {print}' "$DB" > /tmp/zivpn_tmp.json 2>/dev/null && mv /tmp/zivpn_tmp.json "$DB"
     if [ -f "$CONFIG" ] && command -v jq &>/dev/null; then
@@ -1925,7 +1985,8 @@ bot_renew() {
     fi
     systemctl restart zivpn 2>/dev/null
     echo "User renewed: $pass"
-    echo "Expiry: $oldexp -> $newexp (access restored)"
+    echo "Expiry: $oldexp -> $newexp"
+    echo "Runs for: $(expiry_human "$newexp")"
 }
 
 bot_resetbw() {
@@ -1949,11 +2010,10 @@ bot_resetbw() {
 
 bot_cleanup() {
     if [ ! -f "$DB" ] || [ ! -s "$DB" ]; then echo "No users to clean."; return 0; fi
-    local today removed=0
-    today=$(date +%Y-%m-%d)
+    local removed=0
     while IFS='|' read -r pass exp quota port hwid used; do
         [ -z "$pass" ] && continue
-        if [[ "$exp" < "$today" ]]; then
+        if is_expired "$exp"; then
             [ -n "$port" ] && remove_tracking "$port"
             [ -f "$CONFIG" ] && jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json 2>/dev/null && mv /tmp/zivpn_tmp.json "$CONFIG"
             bot_del_line "$DB" "$pass"

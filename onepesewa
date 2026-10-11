@@ -139,30 +139,159 @@ banner() {
 }
 
 show_menu() {
+    local svc_icon svc_label
+    if systemctl is-active --quiet zivpn 2>/dev/null; then
+        svc_icon="🟢"; svc_label="${GRN}Active${RST}"
+    else
+        svc_icon="🔴"; svc_label="${RED}Inactive${RST}"
+    fi
+    local ucount disk
+    ucount=$(jq '.auth.config | length' "$CONFIG" 2>/dev/null || wc -l < "$DB" 2>/dev/null || echo "0")
+    disk=$(df -h / 2>/dev/null | awk 'NR==2{print $3"/"$2}')
     echo -e "${WHT}╔═══════════════════════════════════════════════════════════════╗${RST}"
-    echo -e "${WHT}║${RST}  ${YLW}${BOLD}◈  SERVICE${RST}                                                    ${WHT}║${RST}"
-    printf  "${WHT}║${RST}  ${GRN}[1]${RST} ▶ Start      ${GRN}[2]${RST} ■ Stop      ${GRN}[3]${RST} ↺ Restart   ${GRN}[4]${RST} ◉ Status  ${WHT}║${RST}\n"
+    printf  "${WHT}║${RST}  ${YLW}${BOLD}⚡ OP UDP VPS PANEL${RST}  ${DIM}v${PANEL_VERSION}${RST}  ${DIM}│${RST}  ${MAG}${ADMIN_HANDLE}${RST}                ${WHT}║${RST}\n"
     echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
-    echo -e "${WHT}║${RST}  ${YLW}${BOLD}◈  USER MANAGEMENT${RST}                                            ${WHT}║${RST}"
-    printf  "${WHT}║${RST}  ${GRN}[5]${RST} List Users   ${GRN}[6]${RST} Add User    ${GRN}[7]${RST} Remove      ${GRN}[8]${RST} Renew     ${WHT}║${RST}\n"
-    printf  "${WHT}║${RST}  ${GRN}[9]${RST} Cleanup      ${GRN}[19]${RST} Conn Limit  ${GRN}[20]${RST} Trial User  ${GRN}[24]${RST} Status   ${WHT}║${RST}\n"
-    printf  "${WHT}║${RST}  ${GRN}[31]${RST} ⏸ Pause User ${GRN}[32]${RST} ▶ Resume    ${GRN}[33]${RST} Pause Mon    ${GRN}[34]${RST} Paused List${WHT}║${RST}\n"
-    printf  "${WHT}║${RST}  ${GRN}[35]${RST} 🔒 HWID Lock ${GRN}[36]${RST} 🆕 Reset HWID                                  ${WHT}║${RST}\n"
+    printf  "${WHT}║${RST}  ${svc_icon} ZIVPN: %-10b  ${DIM}│${RST}  ${CYN}👥 Users: %-4s${RST}  ${DIM}│${RST}  ${GRN}💾 %-12s${RST}  ${WHT}║${RST}\n" \
+            "$svc_label" "$ucount" "$disk"
     echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
-    echo -e "${WHT}║${RST}  ${YLW}${BOLD}◈  MONITORING${RST}                                                 ${WHT}║${RST}"
-    printf  "${WHT}║${RST}  ${GRN}[10]${RST} Conn Stats   ${GRN}[11]${RST} BW+Expiry   ${GRN}[12]${RST} Reset BW    ${GRN}[13]${RST} Speed   ${WHT}║${RST}\n"
-    printf  "${WHT}║${RST}  ${GRN}[14]${RST} Live Logs                                                 ${WHT}║${RST}\n"
+    echo -e "${WHT}║${RST}                                                               ${WHT}║${RST}"
+    printf  "${WHT}║${RST}    ${GRN}[1]${RST} 🔧 Service Control      ${GRN}[2]${RST} 👥 User Management      ${WHT}║${RST}\n"
+    printf  "${WHT}║${RST}    ${GRN}[3]${RST} 📊 Monitoring           ${GRN}[4]${RST} 🛠  System & Tools       ${WHT}║${RST}\n"
+    echo -e "${WHT}║${RST}                                                               ${WHT}║${RST}"
     echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
-    echo -e "${WHT}║${RST}  ${YLW}${BOLD}◈  SYSTEM & TOOLS${RST}                                             ${WHT}║${RST}"
-    printf  "${WHT}║${RST}  ${GRN}[15]${RST} Backup       ${GRN}[16]${RST} Restore     ${GRN}[17]${RST} Port Range  ${GRN}[18]${RST} ${YLW}Update${RST}  ${WHT}║${RST}\n"
-    printf  "${WHT}║${RST}  ${GRN}[21]${RST} 🚀 BBR Opt    ${GRN}[22]${RST} 📡 BadVPN    ${GRN}[23]${RST} 🤖 Bot Config  ${GRN}[25]${RST} 🔒 ConnEnf${WHT}║${RST}\n"
-    printf  "${WHT}║${RST}  ${GRN}[26]${RST} 📊 Conn Status ${GRN}[27]${RST} 🔢 IP Limit   ${GRN}[28]${RST} 🔄 Reset IPs  ${GRN}[29]${RST} 📡 BWmon ON${WHT}║${RST}\n"
-    printf  "${WHT}║${RST}  ${GRN}[30]${RST} 🛑 BWmon OFF                                                  ${WHT}║${RST}\n"
-    echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
-    printf  "${WHT}║${RST}  ${RED}[99]${RST} 🗑  UNINSTALL                        ${GRN}[0]${RST} 🚪 Exit       ${WHT}║${RST}\n"
+    printf  "${WHT}║${RST}    ${RED}[99]${RST} 🗑  Uninstall                   ${GRN}[0]${RST} 🚪 Exit            ${WHT}║${RST}\n"
     echo -e "${WHT}╚═══════════════════════════════════════════════════════════════╝${RST}"
     echo ""
-    printf  "  ${CYN}${BOLD}▸ Choose [0-99]: ${RST}"
+    printf  "  ${CYN}${BOLD}▸ Choose [0-4 / 99]: ${RST}"
+}
+
+menu_service() {
+    while true; do
+        clear; print_logo
+        echo -e "${WHT}╔═══════════════════════════════════════════════════════════════╗${RST}"
+        echo -e "${WHT}║${RST}  ${YLW}${BOLD}🔧  SERVICE CONTROL${RST}                              ${GRN}[0]${RST} ↩ Back  ${WHT}║${RST}"
+        echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
+        printf  "${WHT}║${RST}   ${GRN}[1]${RST} ▶  Start ZIVPN        ${GRN}[2]${RST} ■  Stop ZIVPN          ${WHT}║${RST}\n"
+        printf  "${WHT}║${RST}   ${GRN}[3]${RST} ↺  Restart ZIVPN      ${GRN}[4]${RST} ◉  Service Status      ${WHT}║${RST}\n"
+        echo -e "${WHT}╚═══════════════════════════════════════════════════════════════╝${RST}"
+        echo ""
+        printf  "  ${CYN}${BOLD}▸ Choose [0-4]: ${RST}"; read -r opt
+        case $opt in
+            1) do_start ;;
+            2) do_stop ;;
+            3) do_restart ;;
+            4) do_status ;;
+            0) return ;;
+            *) echo -e "\n  ${RED}✘  Invalid.${RST}"; sleep 1 ;;
+        esac
+    done
+}
+
+menu_users() {
+    while true; do
+        clear; print_logo
+        echo -e "${WHT}╔═══════════════════════════════════════════════════════════════╗${RST}"
+        echo -e "${WHT}║${RST}  ${YLW}${BOLD}👥  USER MANAGEMENT${RST}                              ${GRN}[0]${RST} ↩ Back  ${WHT}║${RST}"
+        echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
+        printf  "${WHT}║${RST}   ${GRN}[1]${RST} 📋 List Users         ${GRN}[2]${RST} ➕ Add User            ${WHT}║${RST}\n"
+        printf  "${WHT}║${RST}   ${GRN}[3]${RST} 🗑  Remove User        ${GRN}[4]${RST} 🔄 Renew User          ${WHT}║${RST}\n"
+        printf  "${WHT}║${RST}   ${GRN}[5]${RST} 🧹 Cleanup Expired    ${GRN}[6]${RST} ⏱  Trial User          ${WHT}║${RST}\n"
+        printf  "${WHT}║${RST}   ${GRN}[7]${RST} 📊 User Status        ${GRN}[8]${RST} 🔢 Conn Limit          ${WHT}║${RST}\n"
+        echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
+        echo -e "${WHT}║${RST}  ${DIM}── PAUSE ────────────────────────────────────────────────${RST}  ${WHT}║${RST}"
+        printf  "${WHT}║${RST}   ${GRN}[9]${RST} ⏸  Pause User         ${GRN}[10]${RST} ▶  Resume User        ${WHT}║${RST}\n"
+        printf  "${WHT}║${RST}  ${GRN}[11]${RST} 👁  Pause Monitor      ${GRN}[12]${RST} 📋 Paused List        ${WHT}║${RST}\n"
+        echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
+        echo -e "${WHT}║${RST}  ${DIM}── HWID ─────────────────────────────────────────────────${RST}  ${WHT}║${RST}"
+        printf  "${WHT}║${RST}  ${GRN}[13]${RST} 🔒 HWID Lock          ${GRN}[14]${RST} 🆕 Reset HWID         ${WHT}║${RST}\n"
+        echo -e "${WHT}╚═══════════════════════════════════════════════════════════════╝${RST}"
+        echo ""
+        printf  "  ${CYN}${BOLD}▸ Choose [0-14]: ${RST}"; read -r opt
+        case $opt in
+            1)  do_list ;;
+            2)  do_add_user ;;
+            3)  do_remove_user ;;
+            4)  do_renew_user ;;
+            5)  do_cleanup ;;
+            6)  do_trial_user ;;
+            7)  do_user_status ;;
+            8)  do_conn_limit ;;
+            9)  do_pause_user ;;
+            10) do_resume_user ;;
+            11) do_pause_monitor_menu ;;
+            12) do_paused_list ;;
+            13) do_hwid_lock_menu ;;
+            14) do_reset_hwid_for_user ;;
+            0)  return ;;
+            *)  echo -e "\n  ${RED}✘  Invalid.${RST}"; sleep 1 ;;
+        esac
+    done
+}
+
+menu_monitoring() {
+    while true; do
+        clear; print_logo
+        echo -e "${WHT}╔═══════════════════════════════════════════════════════════════╗${RST}"
+        echo -e "${WHT}║${RST}  ${YLW}${BOLD}📊  MONITORING${RST}                                   ${GRN}[0]${RST} ↩ Back  ${WHT}║${RST}"
+        echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
+        printf  "${WHT}║${RST}   ${GRN}[1]${RST} 🔗 Conn Stats         ${GRN}[2]${RST} 📈 BW + Expiry         ${WHT}║${RST}\n"
+        printf  "${WHT}║${RST}   ${GRN}[3]${RST} 🔄 Reset BW           ${GRN}[4]${RST} ⚡ Speed Test          ${WHT}║${RST}\n"
+        printf  "${WHT}║${RST}   ${GRN}[5]${RST} 📜 Live Logs          ${GRN}[6]${RST} 📊 Limits Status       ${WHT}║${RST}\n"
+        echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
+        echo -e "${WHT}║${RST}  ${DIM}── IP & CONN LIMITS ─────────────────────────────────────${RST}  ${WHT}║${RST}"
+        printf  "${WHT}║${RST}   ${GRN}[7]${RST} 🌐 IP Limit           ${GRN}[8]${RST} 🔄 Reset IPs          ${WHT}║${RST}\n"
+        printf  "${WHT}║${RST}   ${GRN}[9]${RST} 🚥 Conn Enforce      ${GRN}[10]${RST} 📊 Conn Status        ${WHT}║${RST}\n"
+        echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
+        echo -e "${WHT}║${RST}  ${DIM}── BANDWIDTH MONITOR ────────────────────────────────────${RST}  ${WHT}║${RST}"
+        printf  "${WHT}║${RST}  ${GRN}[11]${RST} 📡 BWmon ON          ${GRN}[12]${RST} 🛑 BWmon OFF          ${WHT}║${RST}\n"
+        echo -e "${WHT}╚═══════════════════════════════════════════════════════════════╝${RST}"
+        echo ""
+        printf  "  ${CYN}${BOLD}▸ Choose [0-12]: ${RST}"; read -r opt
+        case $opt in
+            1)  do_conn_stats ;;
+            2)  do_bw_expiry ;;
+            3)  do_reset_bw ;;
+            4)  do_speedtest ;;
+            5)  do_live_logs ;;
+            6)  do_limits_status ;;
+            7)  do_ip_limit ;;
+            8)  do_reset_ip_list ;;
+            9)  do_enforcement_menu ;;
+            10) do_conn_stats ;;
+            11) do_bw_monitor_menu ;;
+            12) disable_bw_monitor; press_enter ;;
+            0)  return ;;
+            *)  echo -e "\n  ${RED}✘  Invalid.${RST}"; sleep 1 ;;
+        esac
+    done
+}
+
+menu_system() {
+    while true; do
+        clear; print_logo
+        echo -e "${WHT}╔═══════════════════════════════════════════════════════════════╗${RST}"
+        echo -e "${WHT}║${RST}  ${YLW}${BOLD}🛠   SYSTEM & TOOLS${RST}                              ${GRN}[0]${RST} ↩ Back  ${WHT}║${RST}"
+        echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
+        printf  "${WHT}║${RST}   ${GRN}[1]${RST} 💾 Backup             ${GRN}[2]${RST} 📂 Restore            ${WHT}║${RST}\n"
+        printf  "${WHT}║${RST}   ${GRN}[3]${RST} 🔢 Port Range         ${GRN}[4]${RST} 🔃 ${YLW}Update Panel${RST}        ${WHT}║${RST}\n"
+        printf  "${WHT}║${RST}   ${GRN}[5]${RST} 🚀 BBR Optimizer      ${GRN}[6]${RST} 📡 BadVPN             ${WHT}║${RST}\n"
+        printf  "${WHT}║${RST}   ${GRN}[7]${RST} 🤖 Telegram Bot       ${GRN}[8]${RST} 🔒 Conn Enforcement   ${WHT}║${RST}\n"
+        echo -e "${WHT}╚═══════════════════════════════════════════════════════════════╝${RST}"
+        echo ""
+        printf  "  ${CYN}${BOLD}▸ Choose [0-8]: ${RST}"; read -r opt
+        case $opt in
+            1) do_backup ;;
+            2) do_restore ;;
+            3) do_port_range ;;
+            4) do_update ;;
+            5) do_bbr ;;
+            6) do_badvpn ;;
+            7) config_telegram ;;
+            8) do_enforcement_menu ;;
+            0) return ;;
+            *) echo -e "\n  ${RED}✘  Invalid.${RST}"; sleep 1 ;;
+        esac
+    done
 }
 
 press_enter() { echo ""; read -rp "  Press [Enter] to continue..." _x; }
@@ -254,20 +383,30 @@ write_pause_monitor() {
 #!/bin/bash
 PAUSE_DB="/etc/zivpn/paused.db"
 DB="/etc/zivpn/users.db"
+CONFIG="/etc/zivpn/config.json"
 LOG="/var/log/opudp_pause.log"
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG"; }
 while true; do
     if [ -f "$PAUSE_DB" ] && [ -s "$PAUSE_DB" ]; then
+        changed=0
         while IFS='|' read -r pass resume_ts; do
+            [ -z "$pass" ] && continue
             if [ "$(date +%s)" -ge "$resume_ts" ]; then
-                port=$(grep "^${pass}|" "$DB" 2>/dev/null | cut -d'|' -f4)
-                if [ -n "$port" ]; then
-                    iptables -D INPUT -p udp --dport "$port" -j DROP 2>/dev/null
-                    log "Auto-resumed user $pass (port $port)"
+                # Restore the password pause removed from the ZiVPN auth list.
+                if [ -f "$CONFIG" ] && command -v jq >/dev/null 2>&1; then
+                    if ! jq -e --arg p "$pass" '.auth.config | index($p) != null' "$CONFIG" >/dev/null 2>&1; then
+                        jq --arg p "$pass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_pm.json 2>/dev/null \
+                            && mv /tmp/zivpn_pm.json "$CONFIG" && changed=1
+                    fi
                 fi
+                # Clear any legacy DROP rule from older versions.
+                port=$(grep "^${pass}|" "$DB" 2>/dev/null | cut -d'|' -f4)
+                [ -n "$port" ] && iptables -D INPUT -p udp --dport "$port" -j DROP 2>/dev/null
                 sed -i "/^${pass}|/d" "$PAUSE_DB" 2>/dev/null
+                log "Auto-resumed user $pass"
             fi
         done < "$PAUSE_DB"
+        [ "$changed" -eq 1 ] && systemctl restart zivpn >/dev/null 2>&1
     fi
     sleep 10
 done
@@ -328,11 +467,20 @@ pause_user() {
     local port=$(grep "^${pass}|" "$DB" 2>/dev/null | cut -d'|' -f4)
     [ -z "$port" ] && { echo "ERROR: User not found."; return 1; }
 
-    # Block all traffic to the port
-    iptables -I INPUT -p udp --dport "$port" -j DROP 2>/dev/null
-
-    # Kill every existing UDP connection on that port – instant disconnection
-    conntrack -D -p udp --dport "$port" 2>/dev/null
+    # ZiVPN authenticates by PASSWORD on 5667 (the whole 6000-19999 range DNATs
+    # there), so blocking one UDP port does nothing — the client just uses
+    # another port. The reliable lever is to pull the password from the auth
+    # list and bounce the relay so the live session re-handshakes and this user
+    # fails re-auth.
+    if [ -f "$CONFIG" ] && command -v jq &>/dev/null; then
+        jq --arg p "$pass" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_tmp.json 2>/dev/null \
+            && mv /tmp/zivpn_tmp.json "$CONFIG"
+    fi
+    # Flush existing UDP/NAT state (main port + DNAT range) for an instant drop,
+    # then bounce zivpn so clients re-handshake.
+    conntrack -D -p udp --dport 5667       2>/dev/null
+    conntrack -D -p udp --dport 6000:19999 2>/dev/null
+    systemctl restart zivpn 2>/dev/null
 
     local resume_ts=$(( $(date +%s) + seconds ))
     mkdir -p "$(dirname "$PAUSE_DB")"
@@ -345,7 +493,17 @@ resume_user() {
     local pass="$1"
     local port=$(grep "^${pass}|" "$DB" 2>/dev/null | cut -d'|' -f4)
     [ -z "$port" ] && { echo "ERROR: User not found."; return 1; }
+    # Restore the password to the auth list (skip if already present) and bounce
+    # the relay so the user can reconnect.
+    if [ -f "$CONFIG" ] && command -v jq &>/dev/null; then
+        if ! jq -e --arg p "$pass" '.auth.config | index($p) != null' "$CONFIG" &>/dev/null; then
+            jq --arg p "$pass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_tmp.json 2>/dev/null \
+                && mv /tmp/zivpn_tmp.json "$CONFIG"
+        fi
+    fi
+    # Clear any legacy pause DROP rule left by older versions, then reload.
     iptables -D INPUT -p udp --dport "$port" -j DROP 2>/dev/null
+    systemctl restart zivpn 2>/dev/null
     sed -i "/^${pass}|/d" "$PAUSE_DB" 2>/dev/null
     echo "SUCCESS|${pass}|resumed"
 }
@@ -914,13 +1072,25 @@ do_renew_user() {
     local line; line=$(grep "^${pass}|" "$DB")
     [ -z "$line" ] && { echo -e "  ${RED}✘  Not found.${RST}"; press_enter; return; }
     local oldexp; oldexp=$(echo "$line" | cut -d'|' -f2)
+    local today; today=$(date +%Y-%m-%d)
     echo -e "  ${DIM}Current expiry: ${WHT}${oldexp}${RST}"
-    echo -ne "  ${GRN}Add how many days: ${RST}"; read -r days
+    echo -ne "  ${GRN}Add how many days (from today): ${RST}"; read -r days
     [[ ! "$days" =~ ^[0-9]+$ ]] && { echo -e "  ${RED}✘  Invalid.${RST}"; press_enter; return; }
-    local newexp; newexp=$(date -d "${oldexp} +${days} days" +%Y-%m-%d 2>/dev/null)
+    # Always renew from today — adding days to an already-expired date would
+    # produce a new expiry still in the past.
+    local newexp; newexp=$(date -d "+${days} days" +%Y-%m-%d 2>/dev/null)
     [ -z "$newexp" ] && { echo -e "  ${RED}✘  Date error.${RST}"; press_enter; return; }
     awk -F'|' -v p="$pass" -v ne="$newexp" 'BEGIN{OFS="|"} $1==p{$2=ne} {print}' "$DB" > /tmp/db_tmp && mv /tmp/db_tmp "$DB"
-    echo -e "\n  ${GRN}✔  Expiry: ${WHT}${oldexp}${GRN} → ${WHT}${newexp}${RST}"
+    # Restore password to ZiVPN auth list in case it was removed (e.g. by
+    # expiry cleanup or quota daemon), then reload zivpn so access is instant.
+    if [ -f "$CONFIG" ] && command -v jq &>/dev/null; then
+        if ! jq -e --arg p "$pass" '.auth.config | index($p) != null' "$CONFIG" &>/dev/null; then
+            jq --arg p "$pass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_tmp.json 2>/dev/null \
+                && mv /tmp/zivpn_tmp.json "$CONFIG"
+        fi
+    fi
+    systemctl restart zivpn 2>/dev/null
+    echo -e "\n  ${GRN}✔  Expiry: ${WHT}${oldexp}${GRN} → ${WHT}${newexp}${GRN}  (access restored)${RST}"
     press_enter
 }
 
@@ -1146,8 +1316,25 @@ do_conn_limit() {
 
 do_trial_user() {
     echo -e "\n  ${CYN}${BOLD}◈  Trial User${RST}\n"
-    echo -ne "  ${GRN}Duration in minutes [1-60]: ${RST}"; read -r mins
-    [[ ! "$mins" =~ ^[0-9]+$ ]] || [ "$mins" -lt 1 ] || [ "$mins" -gt 60 ] && { echo -e "  ${RED}✘  Must be 1-60.${RST}"; press_enter; return; }
+    echo -e "  ${DIM}Duration examples: 30m · 2h · 1d · 7d${RST}"
+    echo -ne "  ${GRN}Duration (e.g. 30m, 2h, 1d): ${RST}"; read -r duration
+    if [[ ! "$duration" =~ ^[0-9]+[mhd]$ ]]; then
+        echo -e "  ${RED}✘  Invalid format. Use e.g. 30m, 2h, 1d.${RST}"; press_enter; return
+    fi
+    local unit=${duration: -1} value=${duration%?}
+    local total_mins=0
+    case $unit in
+        m) total_mins=$value ;;
+        h) total_mins=$(( value * 60 )) ;;
+        d) total_mins=$(( value * 1440 )) ;;
+    esac
+    if [ "$total_mins" -lt 1 ]; then
+        echo -e "  ${RED}✘  Duration too short (minimum 1 minute).${RST}"; press_enter; return
+    fi
+    # Compute DB expiry date from total duration
+    local exp_days=$(( (total_mins + 1439) / 1440 ))   # round up to nearest day
+    [ "$exp_days" -lt 1 ] && exp_days=1
+
     echo -ne "  ${GRN}Password (empty=random): ${RST}"; read -r trialpass
     echo -ne "  ${GRN}IP limit (0=unlimited): ${RST}"; read -r iplim
     echo -ne "  ${GRN}Conn limit (0=unlimited): ${RST}"; read -r connlim
@@ -1166,7 +1353,7 @@ do_trial_user() {
     fi
     port=$(find_free_port)
     [ -z "$port" ] && { echo -e "  ${RED}✘  No free ports.${RST}"; press_enter; return; }
-    exp=$(date -d "+1 day" +%Y-%m-%d 2>/dev/null || date -v +1d +%Y-%m-%d)
+    exp=$(date -d "+${exp_days} days" +%Y-%m-%d 2>/dev/null || date -v "+${exp_days}d" +%Y-%m-%d)
     mkdir -p "$(dirname "$CONFIG")"
     [ -f "$CONFIG" ] || echo '{"auth":{"config":[]}}' > "$CONFIG"
     jq --arg p "$finalpass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
@@ -1184,23 +1371,38 @@ do_trial_user() {
     echo -e "  ${GRN}╠══════════════════════════════════════════════════════════════╣${RST}"
     printf  "  ${GRN}║${RST}  ${YLW}🔑  Password :${RST}  ${WHT}%-44s${RST}${GRN}║${RST}\n" "$finalpass"
     printf  "  ${GRN}║${RST}  ${YLW}🌐  Server   :${RST}  ${WHT}%-44s${RST}${GRN}║${RST}\n" "$IP"
-    printf  "  ${GRN}║${RST}  ${YLW}⏳  Expires  :${RST}  ${WHT}%-44s${RST}${GRN}║${RST}\n" "in $mins minute(s)"
+    printf  "  ${GRN}║${RST}  ${YLW}⏳  Expires  :${RST}  ${WHT}%-44s${RST}${GRN}║${RST}\n" "in ${duration} (auto-deleted)"
     printf  "  ${GRN}║${RST}  ${YLW}📊  Quota    :${RST}  ${WHT}%-44s${RST}${GRN}║${RST}\n" "100MB"
+    printf  "  ${GRN}║${RST}  ${YLW}🔌  Port     :${RST}  ${WHT}%-44s${RST}${GRN}║${RST}\n" "$port"
     printf  "  ${GRN}║${RST}  ${YLW}🌐 IP Limit :${RST}  ${WHT}%-44s${RST}${GRN}║${RST}\n" "$([ "$iplim" -gt 0 ] && echo "$iplim unique IPs" || echo "Unlimited")"
     printf  "  ${GRN}║${RST}  ${YLW}🚥 Conn Limit:${RST} ${WHT}%-44s${RST}${GRN}║${RST}\n" "$([ "$connlim" -gt 0 ] && echo "$connlim concurrent" || echo "Unlimited")"
     printf  "  ${GRN}║${RST}  ${CYN}👤  Admin    :${RST}  ${WHT}%-44s${RST}${GRN}║${RST}\n" "$ADMIN_HANDLE"
     printf  "  ${GRN}║${RST}  ${CYN}📢  Channel  :${RST}  ${WHT}%-44s${RST}${GRN}║${RST}\n" "$TG_CHANNEL"
     echo -e "  ${GRN}╚══════════════════════════════════════════════════════════════╝${RST}"
 
-    cat <<ATCMD | at now + ${mins} minutes 2>/dev/null
-remove_tracking "$port"
-[ -f "$CONFIG" ] && jq --arg p "$finalpass" '.auth.config -= [\$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
-grep -Fv "^${finalpass}|" "$DB" > /tmp/db_tmp && mv /tmp/db_tmp "$DB"
-grep -Fv "^${finalpass}|" "$USAGE_DB" > /tmp/udb_tmp && mv /tmp/udb_tmp "$USAGE_DB"
-[ -f "$CONN_LIMIT_FILE" ] && grep -Fv "^${finalpass}|" "$CONN_LIMIT_FILE" > /tmp/cl_tmp && mv /tmp/cl_tmp "$CONN_LIMIT_FILE"
-[ -f "$IP_LIMIT_FILE" ] && grep -Fv "^${finalpass}|" "$IP_LIMIT_FILE" > /tmp/ipl_tmp && mv /tmp/ipl_tmp "$IP_LIMIT_FILE"
-[ -f "$PAUSE_DB" ] && grep -Fv "^${finalpass}|" "$PAUSE_DB" > /tmp/pd_tmp && mv /tmp/pd_tmp "$PAUSE_DB"
+    # The 'at' scheduler must be installed AND running or the auto-expiry never
+    # fires (older builds only installed the package, never started atd).
+    command -v at &>/dev/null || apt-get install -y at -qq >/dev/null 2>&1
+    systemctl enable --now atd >/dev/null 2>&1 || systemctl enable --now at >/dev/null 2>&1 || service atd start >/dev/null 2>&1
+
+    # Self-contained cleanup. Values (${finalpass}, ${port}, ${total_mins}) are
+    # baked in at heredoc-submission time. Runs under /bin/sh with no panel
+    # functions loaded — every step is inline.
+    at now + ${total_mins} minutes >/dev/null 2>&1 <<ATCMD
+[ -f "$CONFIG" ] && jq --arg p "${finalpass}" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_trial_${port}.json && mv /tmp/zivpn_trial_${port}.json "$CONFIG"
+sed -i '/^${finalpass}|/d' "$DB"             2>/dev/null
+sed -i '/^${finalpass}|/d' "$USAGE_DB"        2>/dev/null
+sed -i '/^${finalpass}|/d' "$CONN_LIMIT_FILE" 2>/dev/null
+sed -i '/^${finalpass}|/d' "$IP_LIMIT_FILE"   2>/dev/null
+sed -i '/^${finalpass}|/d' "$PAUSE_DB"        2>/dev/null
+sed -i '/^${finalpass}|/d' "$HWID_ALLOWED_DB" 2>/dev/null
 rm -f "/etc/zivpn/iplist_${finalpass}.db" 2>/dev/null
+iptables -D INPUT  -p udp --dport ${port} -j UDP_IN_${port}  2>/dev/null
+iptables -D OUTPUT -p udp --sport ${port} -j UDP_OUT_${port} 2>/dev/null
+iptables -F UDP_IN_${port}  2>/dev/null; iptables -X UDP_IN_${port}  2>/dev/null
+iptables -F UDP_OUT_${port} 2>/dev/null; iptables -X UDP_OUT_${port} 2>/dev/null
+iptables -D INPUT -p udp --dport ${port} -j ACCEPT 2>/dev/null
+iptables -t nat -D PREROUTING -p udp --dport ${port} -j DNAT --to-destination :5667 2>/dev/null
 systemctl restart zivpn 2>/dev/null
 ATCMD
 
@@ -1548,42 +1750,10 @@ while true; do
     show_menu
     read -r opt
     case $opt in
-        1)  do_start ;;
-        2)  do_stop ;;
-        3)  do_restart ;;
-        4)  do_status ;;
-        5)  do_list ;;
-        6)  do_add_user ;;
-        7)  do_remove_user ;;
-        8)  do_renew_user ;;
-        9)  do_cleanup ;;
-        10) do_conn_stats ;;
-        11) do_bw_expiry ;;
-        12) do_reset_bw ;;
-        13) do_speedtest ;;
-        14) do_live_logs ;;
-        15) do_backup ;;
-        16) do_restore ;;
-        17) do_port_range ;;
-        18) do_update ;;
-        19) do_conn_limit ;;
-        20) do_trial_user ;;
-        21) do_bbr ;;
-        22) do_badvpn ;;
-        23) config_telegram ;;
-        24) do_user_status ;;
-        25) do_enforcement_menu ;;
-        26) do_limits_status ;;
-        27) do_ip_limit ;;
-        28) do_reset_ip_list ;;
-        29) do_bw_monitor_menu ;;
-        30) disable_bw_monitor ;;
-        31) do_pause_user ;;
-        32) do_resume_user ;;
-        33) do_pause_monitor_menu ;;
-        34) do_paused_list ;;
-        35) do_hwid_lock_menu ;;
-        36) do_reset_hwid_for_user ;;
+        1)  menu_service ;;
+        2)  menu_users ;;
+        3)  menu_monitoring ;;
+        4)  menu_system ;;
         99) do_uninstall ;;
         0)  goodbye; exit 0 ;;
         *)  echo -e "\n  ${RED}✘  Invalid option.${RST}"; sleep 1 ;;

@@ -257,20 +257,30 @@ if [[ "$svc_yes" =~ ^[Yy]$ ]]; then
 #!/bin/bash
 PAUSE_DB="/etc/zivpn/paused.db"
 DB="/etc/zivpn/users.db"
+CONFIG="/etc/zivpn/config.json"
 LOG="/var/log/opudp_pause.log"
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG"; }
 while true; do
     if [ -f "$PAUSE_DB" ] && [ -s "$PAUSE_DB" ]; then
+        changed=0
         while IFS='|' read -r pass resume_ts; do
+            [ -z "$pass" ] && continue
             if [ "$(date +%s)" -ge "$resume_ts" ]; then
-                port=$(grep "^${pass}|" "$DB" 2>/dev/null | cut -d'|' -f4)
-                if [ -n "$port" ]; then
-                    iptables -D INPUT -p udp --dport "$port" -j DROP 2>/dev/null
-                    log "Auto-resumed user $pass (port $port)"
+                # Restore the password pause removed from the ZiVPN auth list.
+                if [ -f "$CONFIG" ] && command -v jq >/dev/null 2>&1; then
+                    if ! jq -e --arg p "$pass" '.auth.config | index($p) != null' "$CONFIG" >/dev/null 2>&1; then
+                        jq --arg p "$pass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_pm.json 2>/dev/null \
+                            && mv /tmp/zivpn_pm.json "$CONFIG" && changed=1
+                    fi
                 fi
+                # Clear any legacy DROP rule from older versions.
+                port=$(grep "^${pass}|" "$DB" 2>/dev/null | cut -d'|' -f4)
+                [ -n "$port" ] && iptables -D INPUT -p udp --dport "$port" -j DROP 2>/dev/null
                 sed -i "/^${pass}|/d" "$PAUSE_DB" 2>/dev/null
+                log "Auto-resumed user $pass"
             fi
         done < "$PAUSE_DB"
+        [ "$changed" -eq 1 ] && systemctl restart zivpn >/dev/null 2>&1
     fi
     sleep 10
 done

@@ -1391,7 +1391,7 @@ do_trial_user() {
     # baked in at heredoc-submission time. Runs under /bin/sh with no panel
     # functions loaded — every step is inline.
     at now + ${total_mins} minutes >/dev/null 2>&1 <<ATCMD
-[ -f "$CONFIG" ] && jq --arg p "${finalpass}" '.auth.config -= [$p]' "$CONFIG" > /tmp/zivpn_trial_${port}.json && mv /tmp/zivpn_trial_${port}.json "$CONFIG"
+[ -f "$CONFIG" ] && jq --arg p "${finalpass}" '.auth.config -= [\$p]' "$CONFIG" > /tmp/zivpn_trial_${port}.json && mv /tmp/zivpn_trial_${port}.json "$CONFIG"
 sed -i '/^${finalpass}|/d' "$DB"             2>/dev/null
 sed -i '/^${finalpass}|/d' "$USAGE_DB"        2>/dev/null
 sed -i '/^${finalpass}|/d' "$CONN_LIMIT_FILE" 2>/dev/null

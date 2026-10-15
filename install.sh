@@ -244,78 +244,6 @@ else
     exit 1
 fi
 
-# Optional background services
-echo ""
-echo -e "  ${YLW}${BOLD}▸ Enable background services?${RST}  ${DIM}(pause / IP limit / bandwidth monitoring)${RST}"
-echo -ne "  ${CYN}  [y/N]: ${RST}"; read -r svc_yes
-
-if [[ "$svc_yes" =~ ^[Yy]$ ]]; then
-    step 7 7 "Enabling monitoring services"
-
-    # Pause monitor daemon
-    cat > /usr/local/bin/opudp_pausemon.sh <<'DEOF'
-#!/bin/bash
-PAUSE_DB="/etc/zivpn/paused.db"
-DB="/etc/zivpn/users.db"
-CONFIG="/etc/zivpn/config.json"
-LOG="/var/log/opudp_pause.log"
-log() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "$LOG"; }
-while true; do
-    if [ -f "$PAUSE_DB" ] && [ -s "$PAUSE_DB" ]; then
-        changed=0
-        while IFS='|' read -r pass resume_ts; do
-            [ -z "$pass" ] && continue
-            if [ "$(date +%s)" -ge "$resume_ts" ]; then
-                # Restore the password pause removed from the ZiVPN auth list.
-                if [ -f "$CONFIG" ] && command -v jq >/dev/null 2>&1; then
-                    if ! jq -e --arg p "$pass" '.auth.config | index($p) != null' "$CONFIG" >/dev/null 2>&1; then
-                        jq --arg p "$pass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_pm.json 2>/dev/null \
-                            && mv /tmp/zivpn_pm.json "$CONFIG" && changed=1
-                    fi
-                fi
-                # Clear any legacy DROP rule from older versions.
-                port=$(grep "^${pass}|" "$DB" 2>/dev/null | cut -d'|' -f4)
-                [ -n "$port" ] && iptables -D INPUT -p udp --dport "$port" -j DROP 2>/dev/null
-                sed -i "/^${pass}|/d" "$PAUSE_DB" 2>/dev/null
-                log "Auto-resumed user $pass"
-            fi
-        done < "$PAUSE_DB"
-        [ "$changed" -eq 1 ] && systemctl restart zivpn >/dev/null 2>&1
-    fi
-    sleep 10
-done
-DEOF
-    chmod +x /usr/local/bin/opudp_pausemon.sh
-
-    cat > /etc/systemd/system/opudp-pausemon.service <<'POFF'
-[Unit]
-Description=OP UDP Panel Pause Monitor
-After=network.target
-[Service]
-Type=simple
-User=root
-ExecStart=/usr/local/bin/opudp_pausemon.sh
-Restart=always
-RestartSec=10
-[Install]
-WantedBy=multi-user.target
-POFF
-
-    systemctl daemon-reload
-    systemctl enable opudp-pausemon 2>/dev/null
-    systemctl start  opudp-pausemon 2>/dev/null
-    ok "Pause monitor enabled"
-
-    echo -ne "  ${GRN}Enable IP limit monitor? (checks every 5s) [y/N]: ${RST}"; read -r ipm_yes
-    [[ "$ipm_yes" =~ ^[Yy]$ ]] && /usr/local/bin/onepesewa --bot-ipmon_on 2>/dev/null && ok "IP limit monitor enabled"
-
-    echo -ne "  ${GRN}Enable bandwidth monitor? (updates every 30s) [y/N]: ${RST}"; read -r bwm_yes
-    [[ "$bwm_yes" =~ ^[Yy]$ ]] && /usr/local/bin/onepesewa --bot-bwmon_on 2>/dev/null && ok "Bandwidth monitor enabled"
-
-    echo -ne "  ${GRN}Enable connection limit enforcement? (cron every min) [y/N]: ${RST}"; read -r enf_yes
-    [[ "$enf_yes" =~ ^[Yy]$ ]] && /usr/local/bin/onepesewa --bot-enforce_on 2>/dev/null && ok "Connection enforcement enabled"
-fi
-
 echo ""
 echo -e "  ${WHT}╔═══════════════════════════════════════════════════════════════╗${RST}"
 echo -e "  ${WHT}║${RST}  ${GRN}${BOLD}🎉  INSTALLATION COMPLETE!${RST}                                   ${WHT}║${RST}"
@@ -325,23 +253,17 @@ printf  "  ${WHT}║${RST}  ${YLW}📍 Location    :${RST}  ${WHT}%-44s${RST}${W
 printf  "  ${WHT}║${RST}  ${BLU}🏢 ISP         :${RST}  ${WHT}%-44s${RST}${WHT}║${RST}\n" "$ISP"
 echo -e "  ${WHT}╚═══════════════════════════════════════════════════════════════╝${RST}"
 echo -e "  ${GRN}${BOLD}✔  All done!  Type ${CYN}onepesewa${GRN} to open the management panel.${RST}"
+echo ""
+
+# No optional services are enabled here on purpose — everything is switched on
+# from the panel afterwards:
+#   onepesewa → [1] Service Control : pause monitor, IP limit monitor,
+#                                     bandwidth monitor, conn enforcement, BBR
+#   onepesewa → [5] VPN Protocols   : BadVPN, HTTP-Custom, WS-SSH
+echo -e "  ${CYN}▸ Enable optional services from the panel:${RST}"
+echo -e "  ${DIM}   [1] Service Control → pause / IP / BW monitors, enforcement, BBR${RST}"
+echo -e "  ${DIM}   [5] VPN Protocols   → BadVPN, HTTP-Custom, WS-SSH${RST}"
 echo -e "  ${DIM}  ${ADMIN_HANDLE}  |  ${TG_CHANNEL}${RST}\n"
-
-# Optional BBR
-echo -e "  ${YLW}${BOLD}▸ Install BBR + TCP Optimizer?${RST}  ${DIM}(recommended)${RST}"
-echo -ne "  ${CYN}  [y/N]: ${RST}"; read -r answer_bbr
-if [[ "$answer_bbr" =~ ^[Yy]$ ]]; then
-    echo -e "\n  ${YLW}▸ Running BBR optimizer...${RST}\n"
-    apt-get install -y curl -qq 2>/dev/null
-    bash <(curl -4 -s \
-        "https://raw.githubusercontent.com/opiran-club/VPS-Optimizer/main/optimizer.sh" \
-        --ipv4)
-    echo -e "\n  ${GRN}✔  BBR optimization complete.${RST}"
-fi
-
-# BadVPN / HTTP-Custom / WS-SSH are NOT offered here on purpose — install them
-# from the panel afterwards (onepesewa → [5] VPN Protocols), which coexists
-# with ZIVPN and provides uninstall options.
 SCRIPT
 
 chmod +x /tmp/opudp_install.sh

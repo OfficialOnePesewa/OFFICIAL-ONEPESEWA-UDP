@@ -199,14 +199,28 @@ menu_service() {
         echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
         printf  "${WHT}║${RST}   ${GRN}[1]${RST} ▶  Start ZIVPN        ${GRN}[2]${RST} ■  Stop ZIVPN          ${WHT}║${RST}\n"
         printf  "${WHT}║${RST}   ${GRN}[3]${RST} ↺  Restart ZIVPN      ${GRN}[4]${RST} ◉  Service Status      ${WHT}║${RST}\n"
+        echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
+        echo -e "${WHT}║${RST}  ${DIM}── BACKGROUND SERVICES ─────────────────────────────────────${RST}  ${WHT}║${RST}"
+        printf  "${WHT}║${RST}   ${GRN}[5]${RST} ⏸  Pause Monitor      $(proto_dot opudp-pausemon)  ${DIM}auto-resume${RST}          ${WHT}║${RST}\n"
+        printf  "${WHT}║${RST}   ${GRN}[6]${RST} 🌐 IP Limit Monitor   $(proto_dot opudp-ipmon)  ${DIM}every 5 sec${RST}          ${WHT}║${RST}\n"
+        printf  "${WHT}║${RST}   ${GRN}[7]${RST} 📡 Bandwidth Monitor  $(proto_dot opudp-bwmon)  ${DIM}every 30 sec${RST}         ${WHT}║${RST}\n"
+        local enf; [ -f "$ENFORCE_CRON" ] && enf="🟢" || enf="🔴"
+        printf  "${WHT}║${RST}   ${GRN}[8]${RST} 🚥 Conn Enforcement   %s  ${DIM}cron every min${RST}       ${WHT}║${RST}\n" "$enf"
+        echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
+        printf  "${WHT}║${RST}   ${GRN}[9]${RST} 🚀 BBR + TCP Optimizer                               ${WHT}║${RST}\n"
         echo -e "${WHT}╚═══════════════════════════════════════════════════════════════╝${RST}"
         echo ""
-        printf  "  ${CYN}${BOLD}▸ Choose [0-4]: ${RST}"; read -r opt
+        printf  "  ${CYN}${BOLD}▸ Choose [0-9]: ${RST}"; read -r opt
         case $opt in
             1) do_start ;;
             2) do_stop ;;
             3) do_restart ;;
             4) do_status ;;
+            5) do_pause_monitor_menu ;;
+            6) do_ip_monitor_menu ;;
+            7) do_bw_monitor_menu ;;
+            8) do_enforcement_menu ;;
+            9) do_bbr ;;
             0) return ;;
             *) echo -e "\n  ${RED}✘  Invalid.${RST}"; sleep 1 ;;
         esac
@@ -226,13 +240,13 @@ menu_users() {
         echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
         echo -e "${WHT}║${RST}  ${DIM}── PAUSE ────────────────────────────────────────────────${RST}  ${WHT}║${RST}"
         printf  "${WHT}║${RST}   ${GRN}[9]${RST} ⏸  Pause User         ${GRN}[10]${RST} ▶  Resume User        ${WHT}║${RST}\n"
-        printf  "${WHT}║${RST}  ${GRN}[11]${RST} 👁  Pause Monitor      ${GRN}[12]${RST} 📋 Paused List        ${WHT}║${RST}\n"
+        printf  "${WHT}║${RST}   ${GRN}[11]${RST} 📋 Paused List                                 ${WHT}║${RST}\n"
         echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
         echo -e "${WHT}║${RST}  ${DIM}── HWID ─────────────────────────────────────────────────${RST}  ${WHT}║${RST}"
-        printf  "${WHT}║${RST}  ${GRN}[13]${RST} 🔒 HWID Lock          ${GRN}[14]${RST} 🆕 Reset HWID         ${WHT}║${RST}\n"
+        printf  "${WHT}║${RST}  ${GRN}[12]${RST} 🔒 HWID Lock          ${GRN}[13]${RST} 🆕 Reset HWID         ${WHT}║${RST}\n"
         echo -e "${WHT}╚═══════════════════════════════════════════════════════════════╝${RST}"
         echo ""
-        printf  "  ${CYN}${BOLD}▸ Choose [0-14]: ${RST}"; read -r opt
+        printf  "  ${CYN}${BOLD}▸ Choose [0-13]: ${RST}"; read -r opt
         case $opt in
             1)  do_list ;;
             2)  do_add_user ;;
@@ -244,10 +258,9 @@ menu_users() {
             8)  do_conn_limit ;;
             9)  do_pause_user ;;
             10) do_resume_user ;;
-            11) do_pause_monitor_menu ;;
-            12) do_paused_list ;;
-            13) do_hwid_lock_menu ;;
-            14) do_reset_hwid_for_user ;;
+            11) do_paused_list ;;
+            12) do_hwid_lock_menu ;;
+            13) do_reset_hwid_for_user ;;
             0)  return ;;
             *)  echo -e "\n  ${RED}✘  Invalid.${RST}"; sleep 1 ;;
         esac
@@ -266,13 +279,10 @@ menu_monitoring() {
         echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
         echo -e "${WHT}║${RST}  ${DIM}── IP & CONN LIMITS ─────────────────────────────────────${RST}  ${WHT}║${RST}"
         printf  "${WHT}║${RST}   ${GRN}[7]${RST} 🌐 IP Limit           ${GRN}[8]${RST} 🔄 Reset IPs          ${WHT}║${RST}\n"
-        printf  "${WHT}║${RST}   ${GRN}[9]${RST} 🚥 Conn Enforce      ${GRN}[10]${RST} 📊 Conn Status        ${WHT}║${RST}\n"
-        echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
-        echo -e "${WHT}║${RST}  ${DIM}── BANDWIDTH MONITOR ────────────────────────────────────${RST}  ${WHT}║${RST}"
-        printf  "${WHT}║${RST}  ${GRN}[11]${RST} 📡 BWmon ON          ${GRN}[12]${RST} 🛑 BWmon OFF          ${WHT}║${RST}\n"
+        printf  "${WHT}║${RST}   ${GRN}[9]${RST} 📊 Conn Status                                 ${WHT}║${RST}\n"
         echo -e "${WHT}╚═══════════════════════════════════════════════════════════════╝${RST}"
         echo ""
-        printf  "  ${CYN}${BOLD}▸ Choose [0-12]: ${RST}"; read -r opt
+        printf  "  ${CYN}${BOLD}▸ Choose [0-9]: ${RST}"; read -r opt
         case $opt in
             1)  do_conn_stats ;;
             2)  do_bw_expiry ;;
@@ -282,10 +292,7 @@ menu_monitoring() {
             6)  do_limits_status ;;
             7)  do_ip_limit ;;
             8)  do_reset_ip_list ;;
-            9)  do_enforcement_menu ;;
-            10) do_conn_stats ;;
-            11) do_bw_monitor_menu ;;
-            12) disable_bw_monitor; press_enter ;;
+            9)  do_conn_stats ;;
             0)  return ;;
             *)  echo -e "\n  ${RED}✘  Invalid.${RST}"; sleep 1 ;;
         esac
@@ -300,20 +307,17 @@ menu_system() {
         echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
         printf  "${WHT}║${RST}   ${GRN}[1]${RST} 💾 Backup             ${GRN}[2]${RST} 📂 Restore            ${WHT}║${RST}\n"
         printf  "${WHT}║${RST}   ${GRN}[3]${RST} 🔢 Port Range         ${GRN}[4]${RST} 🔃 ${YLW}Update Panel${RST}        ${WHT}║${RST}\n"
-        printf  "${WHT}║${RST}   ${GRN}[5]${RST} 🚀 BBR Optimizer      ${GRN}[6]${RST} 📡 BadVPN             ${WHT}║${RST}\n"
-        printf  "${WHT}║${RST}   ${GRN}[7]${RST} 🤖 Telegram Bot       ${GRN}[8]${RST} 🔒 Conn Enforcement   ${WHT}║${RST}\n"
+        printf  "${WHT}║${RST}   ${GRN}[5]${RST} 📡 BadVPN             ${GRN}[6]${RST} 🤖 Telegram Bot       ${WHT}║${RST}\n"
         echo -e "${WHT}╚═══════════════════════════════════════════════════════════════╝${RST}"
         echo ""
-        printf  "  ${CYN}${BOLD}▸ Choose [0-8]: ${RST}"; read -r opt
+        printf  "  ${CYN}${BOLD}▸ Choose [0-6]: ${RST}"; read -r opt
         case $opt in
             1) do_backup ;;
             2) do_restore ;;
             3) do_port_range ;;
             4) do_update ;;
-            5) do_bbr ;;
-             6) menu_badvpn ;;
-            7) config_telegram ;;
-            8) do_enforcement_menu ;;
+            5) menu_badvpn ;;
+            6) config_telegram ;;
             0) return ;;
             *) echo -e "\n  ${RED}✘  Invalid.${RST}"; sleep 1 ;;
         esac
@@ -2290,6 +2294,19 @@ do_bw_monitor_menu() {
     case $ed in
         [Ee]) enable_bw_monitor ;;
         [Dd]) disable_bw_monitor ;;
+        *) ;;
+    esac
+    press_enter
+}
+
+do_ip_monitor_menu() {
+    echo -e "\n  ${CYN}${BOLD}◈  Instant IP Limit Monitor Control${RST}\n"
+    ip_monitor_status
+    echo ""
+    echo -ne "  ${GRN}Enable (E) / Disable (D) / Back (B): ${RST}"; read -r ed
+    case $ed in
+        [Ee]) enable_ip_monitor ;;
+        [Dd]) disable_ip_monitor ;;
         *) ;;
     esac
     press_enter

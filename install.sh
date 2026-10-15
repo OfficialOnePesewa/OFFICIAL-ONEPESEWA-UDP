@@ -253,17 +253,11 @@ printf  "  ${WHT}║${RST}  ${YLW}📍 Location    :${RST}  ${WHT}%-44s${RST}${W
 printf  "  ${WHT}║${RST}  ${BLU}🏢 ISP         :${RST}  ${WHT}%-44s${RST}${WHT}║${RST}\n" "$ISP"
 echo -e "  ${WHT}╚═══════════════════════════════════════════════════════════════╝${RST}"
 echo -e "  ${GRN}${BOLD}✔  All done!  Type ${CYN}onepesewa${GRN} to open the management panel.${RST}"
-echo ""
-
-# No optional services are enabled here on purpose — everything is switched on
-# from the panel afterwards:
-#   onepesewa → [1] Service Control : pause monitor, IP limit monitor,
-#                                     bandwidth monitor, conn enforcement, BBR
-#   onepesewa → [5] VPN Protocols   : BadVPN, HTTP-Custom, WS-SSH
-echo -e "  ${CYN}▸ Enable optional services from the panel:${RST}"
-echo -e "  ${DIM}   [1] Service Control → pause / IP / BW monitors, enforcement, BBR${RST}"
-echo -e "  ${DIM}   [5] VPN Protocols   → BadVPN, HTTP-Custom, WS-SSH${RST}"
 echo -e "  ${DIM}  ${ADMIN_HANDLE}  |  ${TG_CHANNEL}${RST}\n"
+
+# NOTE: no optional services are offered here on purpose. Pause/IP/BW monitors,
+# conn enforcement, BBR and the VPN protocols are all enabled from the panel
+# after install (onepesewa → [1] Service Control, [5] VPN Protocols).
 SCRIPT
 
 chmod +x /tmp/opudp_install.sh

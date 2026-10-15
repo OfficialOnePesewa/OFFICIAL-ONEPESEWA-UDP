@@ -339,16 +339,9 @@ if [[ "$answer_bbr" =~ ^[Yy]$ ]]; then
     echo -e "\n  ${GRN}✔  BBR optimization complete.${RST}"
 fi
 
-# Optional BadVPN
-echo -e "  ${YLW}${BOLD}▸ Install BadVPN UDP Gateway?${RST}  ${DIM}(for VoIP/WS tunneling)${RST}"
-echo -ne "  ${CYN}  [y/N]: ${RST}"; read -r answer_badvpn
-if [[ "$answer_badvpn" =~ ^[Yy]$ ]]; then
-    echo -e "\n  ${YLW}▸ Installing BadVPN UDPGW...${RST}\n"
-    wget -qN \
-        "https://raw.githubusercontent.com/opiran-club/VPS-Optimizer/main/Install/udpgw.sh" \
-        && bash udpgw.sh
-    echo -e "\n  ${GRN}✔  BadVPN installed.${RST}"
-fi
+# BadVPN / HTTP-Custom / WS-SSH are NOT offered here on purpose — install them
+# from the panel afterwards (onepesewa → [5] VPN Protocols), which coexists
+# with ZIVPN and provides uninstall options.
 SCRIPT
 
 chmod +x /tmp/opudp_install.sh

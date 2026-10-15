@@ -24,6 +24,31 @@ PANEL_VERSION="2.7.1"
 ADMIN_HANDLE="@OfficialOnePesewa"
 TG_CHANNEL="https://t.me/officialonepesewatech"
 
+# ── Extra VPN protocols (ported from VPS_superScript) ──
+# BadVPN (udpgw). Separate binary path from udp-custom's udpgw so
+# uninstalling HTTP-Custom can never break a badvpn service.
+BADVPN_BINARY="/usr/local/bin/badvpn-udpgw"
+BADVPN_SERVICE_FILE="/etc/systemd/system/badvpn.service"
+BADVPN_BUILD_DIR="/root/badvpn-build"
+BADVPN_LISTEN_PORT="7300"
+# HTTP-Custom (udp-custom) + its local udpgw backend. Listens on 36712 —
+# outside ZIVPN's 5667 / 7300 / 6000-19999 ranges, so they coexist.
+UDP_CUSTOM_DIR="/root/udp"
+UDP_CUSTOM_SERVICE_FILE="/etc/systemd/system/udp-custom.service"
+UDP_CUSTOM_LISTEN_PORT="36712"
+UDPGW_BINARY="/usr/local/bin/udpgw"
+UDPGW_SERVICE_FILE="/etc/systemd/system/udpgw.service"
+UDPGW_BACKEND_PORT="7800"
+# Never tunnel DNS or ZIVPN's own ports through udp-custom.
+UDP_CUSTOM_EXCLUDE="53,5300,5667,5060,7300"
+# WS-SSH (WebSocket -> SSH bridge)
+WS_SSH_SCRIPT="/usr/local/bin/ws-ssh-proxy.py"
+WS_SSH_SERVICE="/etc/systemd/system/ws-ssh.service"
+WS_SSH_CONFIG_FILE="/etc/zivpn/ws_ssh_config.conf"
+WS_SSH_INTERNAL_PORT="2082"
+# Binary source for udp-custom (same repo VPS_superScript ships by default).
+UDP_CUSTOM_RAW_BASE="https://raw.githubusercontent.com/SONICE-ENCHIL/VPS_superScript-Revamp/main"
+
 RED='\e[1;31m'  GRN='\e[1;32m'  YLW='\e[1;33m'  BLU='\e[1;34m'
 MAG='\e[1;35m'  CYN='\e[1;36m'  WHT='\e[1;37m'  RST='\e[0m'
 BOLD='\e[1m'    DIM='\e[2m'
@@ -156,12 +181,14 @@ show_menu() {
     echo -e "${WHT}║${RST}                                                               ${WHT}║${RST}"
     printf  "${WHT}║${RST}    ${GRN}[1]${RST} 🔧 Service Control      ${GRN}[2]${RST} 👥 User Management      ${WHT}║${RST}\n"
     printf  "${WHT}║${RST}    ${GRN}[3]${RST} 📊 Monitoring           ${GRN}[4]${RST} 🛠  System & Tools       ${WHT}║${RST}\n"
+    printf  "${WHT}║${RST}    ${GRN}[5]${RST} 🔌 VPN Protocols                                    ${WHT}║${RST}\n"
     echo -e "${WHT}║${RST}                                                               ${WHT}║${RST}"
     echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
     printf  "${WHT}║${RST}    ${RED}[99]${RST} 🗑  Uninstall                   ${GRN}[0]${RST} 🚪 Exit            ${WHT}║${RST}\n"
     echo -e "${WHT}╚═══════════════════════════════════════════════════════════════╝${RST}"
     echo ""
-    printf  "  ${CYN}${BOLD}▸ Choose [0-4 / 99]: ${RST}"
+
+    printf  "  ${CYN}${BOLD}▸ Choose [0-5 / 99]: ${RST}"
 }
 
 menu_service() {
@@ -284,7 +311,7 @@ menu_system() {
             3) do_port_range ;;
             4) do_update ;;
             5) do_bbr ;;
-            6) do_badvpn ;;
+             6) menu_badvpn ;;
             7) config_telegram ;;
             8) do_enforcement_menu ;;
             0) return ;;
@@ -1478,12 +1505,546 @@ do_bbr() {
     press_enter
 }
 
-do_badvpn() {
-    echo -e "\n  ${YLW}${BOLD}◈  BadVPN UDPGW${RST}\n"
-    echo -ne "  ${GRN}Install? [y/N]: ${RST}"; read -r c
-    [[ ! "$c" =~ ^[Yy]$ ]] && { echo -e "  ${YLW}Skipped.${RST}"; press_enter; return; }
-    wget -qN "https://raw.githubusercontent.com/opiran-club/VPS-Optimizer/main/Install/udpgw.sh" && bash udpgw.sh
-    echo -e "\n  ${GRN}✔  Done.${RST}"
+# ══════════════════════════════════════════════════════════════
+#  EXTRA VPN PROTOCOLS  –  BadVPN / HTTP-Custom / WS-SSH
+#  (ported from VPS_superScript, tuned to coexist with ZIVPN)
+# ══════════════════════════════════════════════════════════════
+
+proto_dot() {
+    if systemctl is-active --quiet "$1" 2>/dev/null; then echo "🟢"; else echo "🔴"; fi
+}
+
+# Download a binary and reject empty / HTML / JSON error bodies.
+ff_fetch_bin() {
+    local dest="$1" url="$2"
+    rm -f "$dest" 2>/dev/null
+    wget -q -O "$dest" "$url" 2>/dev/null || { rm -f "$dest" 2>/dev/null; return 1; }
+    [ -s "$dest" ] || { rm -f "$dest" 2>/dev/null; return 1; }
+    if command -v file >/dev/null 2>&1; then
+        file -b "$dest" 2>/dev/null | grep -qiE 'ELF|executable' || { rm -f "$dest" 2>/dev/null; return 1; }
+    else
+        case "$(head -c 4 "$dest" 2>/dev/null)" in
+            "<"*|"{"*|"["*) rm -f "$dest" 2>/dev/null; return 1 ;;
+        esac
+    fi
+    return 0
+}
+
+open_fw_port() {
+    local port="$1" proto="${2:-udp}"
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+        ufw allow "$port/$proto" >/dev/null 2>&1 && echo -e "  ${GRN}✔  UFW: opened $port/$proto${RST}"
+    elif command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld 2>/dev/null; then
+        firewall-cmd --permanent --add-port="$port/$proto" >/dev/null 2>&1
+        firewall-cmd --reload >/dev/null 2>&1
+        echo -e "  ${GRN}✔  firewalld: opened $port/$proto${RST}"
+    fi
+    iptables -I INPUT -p "$proto" --dport "$port" -j ACCEPT 2>/dev/null
+    return 0
+}
+
+save_iptables() {
+    if command -v netfilter-persistent >/dev/null 2>&1; then
+        netfilter-persistent save >/dev/null 2>&1
+    elif command -v iptables-save >/dev/null 2>&1; then
+        mkdir -p /etc/iptables 2>/dev/null
+        iptables-save > /etc/iptables/rules.v4 2>/dev/null
+    fi
+    return 0
+}
+
+menu_protocols() {
+    while true; do
+        clear; print_logo
+        echo -e "${WHT}╔═══════════════════════════════════════════════════════════════╗${RST}"
+        echo -e "${WHT}║${RST}  ${YLW}${BOLD}🔌  VPN PROTOCOLS${RST}                              ${GRN}[0]${RST} ↩ Back  ${WHT}║${RST}"
+        echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
+        printf  "${WHT}║${RST}   ${GRN}[1]${RST} 📡 BadVPN UDPGW           $(proto_dot badvpn) ${DIM}udp :7300 ${RST}      ${WHT}║${RST}\n"
+        printf  "${WHT}║${RST}   ${GRN}[2]${RST} 🌐 HTTP-CUSTOM            $(proto_dot udp-custom) ${DIM}udp :36712${RST}     ${WHT}║${RST}\n"
+        printf  "${WHT}║${RST}   ${GRN}[3]${RST} 🕸  WS-SSH (WebSocket)    $(proto_dot ws-ssh) ${DIM}tcp :2082 ${RST}      ${WHT}║${RST}\n"
+        echo -e "${WHT}╚═══════════════════════════════════════════════════════════════╝${RST}"
+        echo ""
+        printf  "  ${CYN}${BOLD}▸ Choose [0-3]: ${RST}"; read -r opt
+        case $opt in
+            1) menu_badvpn ;;
+            2) menu_http_custom ;;
+            3) menu_ws_ssh ;;
+            0) return ;;
+            *) echo -e "\n  ${RED}✘  Invalid.${RST}"; sleep 1 ;;
+        esac
+    done
+}
+
+menu_badvpn() {
+    while true; do
+        clear; print_logo
+        local bst; bst=$(proto_dot badvpn)
+        echo -e "${WHT}╔═══════════════════════════════════════════════════════════════╗${RST}"
+        printf  "${WHT}║${RST}  ${YLW}${BOLD}📡  BADVPN UDPGW${RST}   %s              ${GRN}[0]${RST} ↩ Back  ${WHT}║${RST}\n" "$bst"
+        echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
+        printf  "${WHT}║${RST}   ${GRN}[1]${RST} 📥 Install          ${GRN}[2]${RST} 🗑  Uninstall              ${WHT}║${RST}\n"
+        echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
+        printf  "${WHT}║${RST}   ${DIM}udp :7300  •  /usr/local/bin/badvpn-udpgw${RST}                 ${WHT}║${RST}\n"
+        echo -e "${WHT}╚═══════════════════════════════════════════════════════════════╝${RST}"
+        echo ""
+        printf  "  ${CYN}${BOLD}▸ Choose [0-2]: ${RST}"; read -r opt
+        case $opt in
+            1) do_install_badvpn ;;
+            2) do_uninstall_badvpn ;;
+            0) return ;;
+            *) echo -e "\n  ${RED}✘  Invalid.${RST}"; sleep 1 ;;
+        esac
+    done
+}
+
+menu_http_custom() {
+    while true; do
+        clear; print_logo
+        local hst; hst=$(proto_dot udp-custom)
+        echo -e "${WHT}╔═══════════════════════════════════════════════════════════════╗${RST}"
+        printf  "${WHT}║${RST}  ${YLW}${BOLD}🌐  HTTP-CUSTOM${RST}    %s              ${GRN}[0]${RST} ↩ Back  ${WHT}║${RST}\n" "$hst"
+        echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
+        printf  "${WHT}║${RST}   ${GRN}[1]${RST} 📥 Install          ${GRN}[2]${RST} 🗑  Uninstall              ${WHT}║${RST}\n"
+        echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
+        printf  "${WHT}║${RST}   ${DIM}udp :36712  •  /root/udp/udp-custom${RST}                         ${WHT}║${RST}\n"
+        echo -e "${WHT}╚═══════════════════════════════════════════════════════════════╝${RST}"
+        echo ""
+        printf  "  ${CYN}${BOLD}▸ Choose [0-2]: ${RST}"; read -r opt
+        case $opt in
+            1) do_install_udp_custom ;;
+            2) do_uninstall_udp_custom ;;
+            0) return ;;
+            *) echo -e "\n  ${RED}✘  Invalid.${RST}"; sleep 1 ;;
+        esac
+    done
+}
+
+menu_ws_ssh() {
+    while true; do
+        clear; print_logo
+        local wst; wst=$(proto_dot ws-ssh)
+        echo -e "${WHT}╔═══════════════════════════════════════════════════════════════╗${RST}"
+        printf  "${WHT}║${RST}  ${YLW}${BOLD}🕸  WS-SSH${RST}        %s              ${GRN}[0]${RST} ↩ Back  ${WHT}║${RST}\n" "$wst"
+        echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
+        printf  "${WHT}║${RST}   ${GRN}[1]${RST} 📥 Install          ${GRN}[2]${RST} 🗑  Uninstall              ${WHT}║${RST}\n"
+        echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
+        printf  "${WHT}║${RST}   ${DIM}tcp :2082  •  /usr/local/bin/ws-ssh-proxy.py${RST}               ${WHT}║${RST}\n"
+        echo -e "${WHT}╚═══════════════════════════════════════════════════════════════╝${RST}"
+        echo ""
+        printf  "  ${CYN}${BOLD}▸ Choose [0-2]: ${RST}"; read -r opt
+        case $opt in
+            1) do_install_ws_ssh ;;
+            2) do_uninstall_ws_ssh ;;
+            0) return ;;
+            *) echo -e "\n  ${RED}✘  Invalid.${RST}"; sleep 1 ;;
+        esac
+    done
+}
+
+# ── BadVPN ────────────────────────────────────────────────────
+do_install_badvpn() {
+    echo -e "\n  ${YLW}${BOLD}◈  BadVPN UDPGW — Install${RST}\n"
+    if [ -f "$BADVPN_SERVICE_FILE" ]; then
+        echo -e "  ${YLW}⚠  BadVPN is already installed.${RST}"; press_enter; return
+    fi
+    local arch badvpn_binary=""
+    arch=$(uname -m)
+    if [ "$arch" = "x86_64" ] || [ "$arch" = "amd64" ]; then
+        echo -e "  ${CYN}▸ Fetching prebuilt udpgw binary...${RST}"
+        if ff_fetch_bin "$BADVPN_BINARY" "https://raw.githubusercontent.com/http-custom/udp-custom/main/module/udpgw"; then
+            chmod +x "$BADVPN_BINARY"
+            badvpn_binary="$BADVPN_BINARY"
+            echo -e "  ${GRN}✔  Prebuilt binary installed.${RST}"
+        else
+            echo -e "  ${YLW}⚠  Prebuilt download failed; building from source instead.${RST}"
+        fi
+    fi
+    if [ -z "$badvpn_binary" ]; then
+        echo -e "  ${CYN}▸ Installing build dependencies...${RST}"
+        apt-get update -qq 2>/dev/null
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq cmake g++ make git build-essential >/dev/null 2>&1 || {
+            echo -e "  ${RED}✘  Failed to install build dependencies.${RST}"; press_enter; return; }
+        cd / 2>/dev/null || true
+        rm -rf "$BADVPN_BUILD_DIR"
+        if ! git clone -q --depth 1 https://github.com/ambrop72/badvpn.git "$BADVPN_BUILD_DIR"; then
+            echo -e "  ${RED}✘  Failed to clone badvpn source.${RST}"
+            rm -rf "$BADVPN_BUILD_DIR"; press_enter; return
+        fi
+        ( cd "$BADVPN_BUILD_DIR" && cmake . >/dev/null 2>&1 ) \
+            || ( cd "$BADVPN_BUILD_DIR" && cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 . >/dev/null 2>&1 ) \
+            || { echo -e "  ${RED}✘  CMake configuration failed.${RST}"; rm -rf "$BADVPN_BUILD_DIR"; press_enter; return; }
+        ( cd "$BADVPN_BUILD_DIR" && make >/dev/null 2>&1 ) \
+            || { echo -e "  ${RED}✘  Compilation failed.${RST}"; rm -rf "$BADVPN_BUILD_DIR"; press_enter; return; }
+        badvpn_binary=$(find "$BADVPN_BUILD_DIR" -name "badvpn-udpgw" -type f | head -n 1)
+        if [ -z "$badvpn_binary" ] || [ ! -f "$badvpn_binary" ]; then
+            echo -e "  ${RED}✘  Compiled binary not found.${RST}"; rm -rf "$BADVPN_BUILD_DIR"; press_enter; return
+        fi
+        cp "$badvpn_binary" "$BADVPN_BINARY" && chmod +x "$BADVPN_BINARY"
+        rm -rf "$BADVPN_BUILD_DIR"
+        badvpn_binary="$BADVPN_BINARY"
+        echo -e "  ${GRN}✔  Compiled and installed.${RST}"
+    fi
+
+    cat > "$BADVPN_SERVICE_FILE" <<EOF
+[Unit]
+Description=BadVPN UDP Gateway – OP UDP Panel
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=$badvpn_binary --listen-addr 0.0.0.0:$BADVPN_LISTEN_PORT --max-clients 1000 --max-connections-for-client 8
+Restart=always
+RestartSec=3
+StandardOutput=null
+StandardError=null
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+    systemctl enable badvpn.service >/dev/null 2>&1
+    systemctl start  badvpn.service
+    # Coexist with ZIVPN: the panel DNATs udp/7300 -> 5667 for ZIVPN.
+    # BadVPN owns 7300, so drop that rule (ZIVPN keeps 5667 + 6000-19999).
+    iptables -t nat -D PREROUTING -p udp --dport 7300 -j DNAT --to-destination :5667 2>/dev/null
+    open_fw_port "$BADVPN_LISTEN_PORT" udp
+    save_iptables
+    sleep 2
+    if systemctl is-active --quiet badvpn; then
+        echo -e "\n  ${GRN}✔  BadVPN installed and active on udp/$BADVPN_LISTEN_PORT.${RST}"
+        echo -e "  ${DIM}Note: udp/7300 now routes to BadVPN (ZIVPN stays on 5667 + 6000-19999).${RST}"
+    else
+        echo -e "\n  ${RED}✘  BadVPN service failed to start.${RST}"
+        journalctl -u badvpn.service -n 15 --no-pager 2>/dev/null
+    fi
+    press_enter
+}
+
+do_uninstall_badvpn() {
+    echo -e "\n  ${YLW}${BOLD}◈  BadVPN UDPGW — Uninstall${RST}\n"
+    if [ ! -f "$BADVPN_SERVICE_FILE" ]; then
+        echo -e "  ${YLW}⚠  BadVPN is not installed.${RST}"; press_enter; return
+    fi
+    systemctl stop badvpn.service >/dev/null 2>&1
+    systemctl disable badvpn.service >/dev/null 2>&1
+    rm -f "$BADVPN_SERVICE_FILE" "$BADVPN_BINARY"
+    rm -rf "$BADVPN_BUILD_DIR"
+    systemctl daemon-reload
+    # Restore ZIVPN's udp/7300 -> 5667 DNAT (only if missing).
+    iptables -t nat -C PREROUTING -p udp --dport 7300 -j DNAT --to-destination :5667 2>/dev/null \
+        || iptables -t nat -A PREROUTING -p udp --dport 7300 -j DNAT --to-destination :5667 2>/dev/null
+    save_iptables
+    echo -e "  ${GRN}✔  BadVPN uninstalled (udp/7300 returned to ZIVPN).${RST}"
+    press_enter
+}
+
+# ── HTTP-Custom (udp-custom) ──────────────────────────────────
+do_install_udp_custom() {
+    echo -e "\n  ${YLW}${BOLD}◈  HTTP-CUSTOM (udp-custom) — Install${RST}\n"
+    if [ -f "$UDP_CUSTOM_SERVICE_FILE" ] || [ -f "$UDPGW_SERVICE_FILE" ]; then
+        echo -e "  ${YLW}⚠  HTTP-CUSTOM is already installed.${RST}"; press_enter; return
+    fi
+    local arch binary_asset binary_url
+    arch=$(uname -m)
+    case "$arch" in
+        x86_64|amd64)  binary_asset="udp-custom-linux-amd64" ;;
+        aarch64|arm64) binary_asset="udp-custom-linux-arm" ;;
+        *) echo -e "  ${RED}✘  Unsupported architecture: $arch${RST}"; press_enter; return ;;
+    esac
+    binary_url="$UDP_CUSTOM_RAW_BASE/udp/$binary_asset"
+    rm -rf "$UDP_CUSTOM_DIR"; mkdir -p "$UDP_CUSTOM_DIR"
+    echo -e "  ${CYN}▸ Downloading udp-custom binary ($arch)...${RST}"
+    if ! ff_fetch_bin "$UDP_CUSTOM_DIR/udp-custom" "$binary_url"; then
+        echo -e "  ${RED}✘  Failed to download a valid binary from:${RST}"
+        echo -e "     ${YLW}$binary_url${RST}"
+        rm -rf "$UDP_CUSTOM_DIR"; press_enter; return
+    fi
+    chmod +x "$UDP_CUSTOM_DIR/udp-custom"
+
+    echo -e "  ${CYN}▸ Setting up udpgw backend (127.0.0.1:$UDPGW_BACKEND_PORT)...${RST}"
+    if [ "$arch" = "x86_64" ] || [ "$arch" = "amd64" ]; then
+        if ! ff_fetch_bin "$UDPGW_BINARY" "https://raw.githubusercontent.com/http-custom/udp-custom/main/module/udpgw"; then
+            echo -e "  ${RED}✘  Failed to download the udpgw helper.${RST}"
+            rm -rf "$UDP_CUSTOM_DIR"; press_enter; return
+        fi
+        chmod +x "$UDPGW_BINARY"
+    else
+        apt-get update -qq 2>/dev/null
+        DEBIAN_FRONTEND=noninteractive apt-get install -y -qq cmake g++ make git >/dev/null 2>&1
+        local tbuild="/tmp/badvpn_build"
+        rm -rf "$tbuild"
+        git clone -q --depth 1 https://github.com/ambrop72/badvpn.git "$tbuild" 2>/dev/null
+        ( cd "$tbuild" && cmake . >/dev/null 2>&1 ) || ( cd "$tbuild" && cmake -DCMAKE_POLICY_VERSION_MINIMUM=3.5 . >/dev/null 2>&1 )
+        ( cd "$tbuild" && make >/dev/null 2>&1 )
+        local cbin; cbin=$(find "$tbuild" -name "badvpn-udpgw" -type f | head -n 1)
+        if [ -n "$cbin" ] && [ -f "$cbin" ]; then
+            cp "$cbin" "$UDPGW_BINARY" && chmod +x "$UDPGW_BINARY"; rm -rf "$tbuild"
+        else
+            echo -e "  ${RED}✘  Failed to compile the udpgw helper for $arch.${RST}"
+            rm -rf "$UDP_CUSTOM_DIR" "$tbuild"; press_enter; return
+        fi
+    fi
+
+    cat > "$UDP_CUSTOM_DIR/config.json" <<EOF
+{
+  "listen": ":$UDP_CUSTOM_LISTEN_PORT",
+  "stream_buffer": 33554432,
+  "receive_buffer": 83886080,
+  "auth": {
+    "mode": "passwords"
+  }
+}
+EOF
+    chmod 644 "$UDP_CUSTOM_DIR/config.json"
+
+    cat > "$UDPGW_SERVICE_FILE" <<EOF
+[Unit]
+Description=UDPGW Backend – OP UDP Panel (HTTP-Custom)
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=$UDPGW_BINARY --listen-addr 127.0.0.1:$UDPGW_BACKEND_PORT --max-clients 1000 --max-connections-for-client 100
+Restart=always
+RestartSec=2s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    cat > "$UDP_CUSTOM_SERVICE_FILE" <<EOF
+[Unit]
+Description=HTTP-Custom (udp-custom) – OP UDP Panel
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=$UDP_CUSTOM_DIR/udp-custom server -exclude $UDP_CUSTOM_EXCLUDE
+WorkingDirectory=$UDP_CUSTOM_DIR/
+Restart=always
+RestartSec=1s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable udpgw.service      >/dev/null 2>&1
+    systemctl start  udpgw.service
+    systemctl enable udp-custom.service >/dev/null 2>&1
+    systemctl start  udp-custom.service
+    open_fw_port "$UDP_CUSTOM_LISTEN_PORT" udp
+    save_iptables
+    sleep 2
+    if systemctl is-active --quiet udp-custom && systemctl is-active --quiet udpgw; then
+        echo -e "\n  ${GRN}✔  HTTP-CUSTOM installed and active on udp/$UDP_CUSTOM_LISTEN_PORT.${RST}"
+        echo -e "  ${DIM}Coexists with ZIVPN: 36712 is outside the 5667 / 6000-19999 ranges and${RST}"
+        echo -e "  ${DIM}ZIVPN ports are excluded from the UDP tunnel.${RST}"
+    else
+        echo -e "\n  ${RED}✘  HTTP-CUSTOM service failed to start.${RST}"
+        journalctl -u udp-custom.service -n 15 --no-pager 2>/dev/null
+        journalctl -u udpgw.service -n 15 --no-pager 2>/dev/null
+    fi
+    press_enter
+}
+
+do_uninstall_udp_custom() {
+    echo -e "\n  ${YLW}${BOLD}◈  HTTP-CUSTOM (udp-custom) — Uninstall${RST}\n"
+    if [ ! -f "$UDP_CUSTOM_SERVICE_FILE" ] && [ ! -f "$UDPGW_SERVICE_FILE" ]; then
+        echo -e "  ${YLW}⚠  HTTP-CUSTOM is not installed.${RST}"; press_enter; return
+    fi
+    systemctl stop udpgw.service       >/dev/null 2>&1
+    systemctl disable udpgw.service    >/dev/null 2>&1
+    systemctl stop udp-custom.service  >/dev/null 2>&1
+    systemctl disable udp-custom.service >/dev/null 2>&1
+    rm -f "$UDP_CUSTOM_SERVICE_FILE" "$UDPGW_SERVICE_FILE" "$UDPGW_BINARY"
+    rm -rf "$UDP_CUSTOM_DIR"
+    systemctl daemon-reload
+    echo -e "  ${GRN}✔  HTTP-CUSTOM uninstalled (ZIVPN untouched).${RST}"
+    press_enter
+}
+
+# ── WS-SSH (WebSocket -> SSH bridge) ──────────────────────────
+do_install_ws_ssh() {
+    echo -e "\n  ${YLW}${BOLD}◈  WS-SSH (WebSocket SSH) — Install${RST}\n"
+    if systemctl is-active --quiet ws-ssh 2>/dev/null; then
+        echo -e "  ${YLW}⚠  WS-SSH is already installed and running.${RST}"; press_enter; return
+    fi
+    local PY; PY=$(command -v python3)
+    if [ -z "$PY" ]; then
+        apt-get install -y -qq python3 >/dev/null 2>&1
+        PY=$(command -v python3)
+    fi
+    if [ -z "$PY" ]; then
+        echo -e "  ${RED}✘  python3 is required but could not be installed.${RST}"; press_enter; return
+    fi
+
+    local ws_response=""
+    echo -e "  ${CYN}▸ Choose the HTTP response for the tunnel handshake:${RST}"
+    echo -e "    ${GRN}[1]${RST} HTTP/1.1 101 Switching Protocols   ${DIM}(WebSocket standard)${RST}"
+    echo -e "    ${GRN}[2]${RST} HTTP/1.1 200 OK                   ${DIM}(works on most carriers)${RST}"
+    echo -e "    ${GRN}[3]${RST} HTTP/1.1 200 Connection Established ${DIM}(CONNECT style)${RST}"
+    echo -e "    ${GRN}[4]${RST} Custom"
+    echo -ne "  ${CYN}  Select [1]: ${RST}"; read -r rc
+    case "$rc" in
+        2) ws_response="HTTP/1.1 200 OK" ;;
+        3) ws_response="HTTP/1.1 200 Connection Established" ;;
+        4) echo -ne "  ${CYN}  Enter custom response: ${RST}"; read -r ws_response
+           [ -z "$ws_response" ] && ws_response="HTTP/1.1 101 Switching Protocols" ;;
+        *) ws_response="HTTP/1.1 101 Switching Protocols" ;;
+    esac
+
+    cat > "$WS_SSH_SCRIPT" <<'PYEOF'
+#!/usr/bin/env python3
+import socket, select, threading, sys, hashlib, base64, os, signal
+
+SSH_HOST, SSH_PORT = "127.0.0.1", 22
+BUF = 65536
+CONF = "/etc/zivpn/ws_ssh_config.conf"
+
+def load_response():
+    resp = "HTTP/1.1 101 Switching Protocols"
+    try:
+        with open(CONF) as f:
+            for line in f:
+                if line.startswith("RESPONSE="):
+                    resp = line.strip().split("=", 1)[1].strip('"').strip("'")
+                    break
+    except FileNotFoundError:
+        pass
+    return resp
+
+CUSTOM_RESPONSE = load_response()
+
+def relay(a, b):
+    try:
+        while True:
+            r, _, _ = select.select([a, b], [], [], 60)
+            if not r:
+                break
+            for s in r:
+                d = s.recv(BUF)
+                if not d:
+                    return
+                (b if s is a else a).sendall(d)
+    except Exception:
+        pass
+    finally:
+        a.close()
+        b.close()
+
+def handle(client):
+    try:
+        data = b""
+        while b"\r\n\r\n" not in data:
+            chunk = client.recv(4096)
+            if not chunk:
+                client.close()
+                return
+            data += chunk
+
+        header_block = data.split(b"\r\n\r\n", 1)[0].decode("utf-8", errors="ignore")
+        headers = {}
+        lines = header_block.split("\r\n")
+        for line in lines[1:]:
+            if ":" in line:
+                k, v = line.split(":", 1)
+                headers[k.strip().lower()] = v.strip()
+
+        ssh = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        ssh.connect((SSH_HOST, SSH_PORT))
+
+        if "upgrade" in headers and "websocket" in headers.get("upgrade", "").lower():
+            key = headers.get("sec-websocket-key", "")
+            magic = "258EAFA5-E914-47DA-95CA-5AB5FE8286DD"
+            accept = base64.b64encode(hashlib.sha1((key + magic).encode()).digest()).decode()
+            if "101" in CUSTOM_RESPONSE:
+                resp = (
+                    f"{CUSTOM_RESPONSE}\r\n"
+                    "Upgrade: websocket\r\n"
+                    "Connection: Upgrade\r\n"
+                    f"Sec-WebSocket-Accept: {accept}\r\n\r\n"
+                )
+            else:
+                resp = f"{CUSTOM_RESPONSE}\r\n\r\n"
+            client.sendall(resp.encode())
+        elif lines[0].upper().startswith("CONNECT"):
+            client.sendall(f"{CUSTOM_RESPONSE}\r\n\r\n".encode())
+        else:
+            client.sendall(f"{CUSTOM_RESPONSE}\r\n\r\n".encode())
+            leftover = data.split(b"\r\n\r\n", 1)[1]
+            if leftover:
+                ssh.sendall(leftover)
+
+        relay(client, ssh)
+    except Exception:
+        client.close()
+
+def main():
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else 2082
+    signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
+    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    srv.bind(("0.0.0.0", port))
+    srv.listen(128)
+    sys.stderr.write(f"[WS-SSH] Listening on :{port} | Response: {CUSTOM_RESPONSE}\n")
+    while True:
+        c, _ = srv.accept()
+        threading.Thread(target=handle, args=(c,), daemon=True).start()
+
+if __name__ == "__main__":
+    main()
+PYEOF
+    chmod +x "$WS_SSH_SCRIPT"
+
+    cat > "$WS_SSH_SERVICE" <<EOF
+[Unit]
+Description=WebSocket SSH Proxy – OP UDP Panel
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=$PY ${WS_SSH_SCRIPT} ${WS_SSH_INTERNAL_PORT}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    cat > "$WS_SSH_CONFIG_FILE" <<EOF
+PORTS="${WS_SSH_INTERNAL_PORT}"
+RESPONSE="${ws_response}"
+EOF
+
+    systemctl daemon-reload
+    open_fw_port "$WS_SSH_INTERNAL_PORT" tcp
+    save_iptables
+    systemctl enable ws-ssh >/dev/null 2>&1
+    systemctl restart ws-ssh >/dev/null 2>&1
+    sleep 1
+    if systemctl is-active --quiet ws-ssh; then
+        echo -e "\n  ${GRN}✔  WS-SSH installed and active on tcp/$WS_SSH_INTERNAL_PORT.${RST}"
+        echo -e "  ${DIM}Response: $ws_response${RST}"
+        echo -e "  ${DIM}Works with HTTP Injector / HA Tunnel / KPN Tunnel (SSH + WebSocket payload).${RST}"
+    else
+        echo -e "\n  ${RED}✘  WS-SSH service failed to start.${RST}"
+        journalctl -u ws-ssh.service -n 15 --no-pager 2>/dev/null
+    fi
+    press_enter
+}
+
+do_uninstall_ws_ssh() {
+    echo -e "\n  ${YLW}${BOLD}◈  WS-SSH — Uninstall${RST}\n"
+    systemctl stop ws-ssh >/dev/null 2>&1
+    systemctl disable ws-ssh >/dev/null 2>&1
+    rm -f "$WS_SSH_SCRIPT" "$WS_SSH_SERVICE" "$WS_SSH_CONFIG_FILE"
+    systemctl daemon-reload
+    echo -e "  ${GRN}✔  WS-SSH uninstalled.${RST}"
     press_enter
 }
 
@@ -2127,6 +2688,7 @@ while true; do
         2)  menu_users ;;
         3)  menu_monitoring ;;
         4)  menu_system ;;
+        5)  menu_protocols ;;
         99) do_uninstall ;;
         0)  goodbye; exit 0 ;;
         *)  echo -e "\n  ${RED}✘  Invalid option.${RST}"; sleep 1 ;;

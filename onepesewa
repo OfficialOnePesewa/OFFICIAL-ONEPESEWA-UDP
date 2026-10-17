@@ -18,6 +18,7 @@ BOT_SCRIPT="/usr/local/bin/opudp_bot.py"
 CONN_LIMIT_FILE="/etc/zivpn/conn_limits.db"
 IP_LIMIT_FILE="/etc/zivpn/ip_limits.db"
 PAUSE_DB="/etc/zivpn/paused.db"
+APP_TYPE_FILE="/etc/zivpn/app_types.db"
 HWID_ALLOWED_DB="/etc/zivpn/hwid_allowed.db"
 BACKUP_DIR="/etc/zivpn/backups"
 PANEL_VERSION="2.7.1"
@@ -39,15 +40,25 @@ UDP_CUSTOM_LISTEN_PORT="36712"
 UDPGW_BINARY="/usr/local/bin/udpgw"
 UDPGW_SERVICE_FILE="/etc/systemd/system/udpgw.service"
 UDPGW_BACKEND_PORT="7800"
-# Never tunnel DNS or ZIVPN's own ports through udp-custom.
+# Never tunnel DNS or the other protocols' own ports through udp-custom.
+# Used as the default when the editable exclude file does not exist yet.
 UDP_CUSTOM_EXCLUDE="53,5300,5667,5060,7300"
+UDP_CUSTOM_EXCLUDE_FILE="/etc/zivpn/udp_custom_exclude.conf"
+# ZIVPN's own UDP band. install.sh DNATs this to 5667; the HTTP-Custom ranges
+# below must never overlap it or ZIVPN clients lose their port-hopping band.
+ZIVPN_LISTEN_PORT="5667"
+ZIVPN_UDP_RANGE_START="6000"
+ZIVPN_UDP_RANGE_END="19999"
+UDP_CUSTOM_DNAT_RANGES="1:5999 20000:65535"
 # WS-SSH (WebSocket -> SSH bridge)
 WS_SSH_SCRIPT="/usr/local/bin/ws-ssh-proxy.py"
 WS_SSH_SERVICE="/etc/systemd/system/ws-ssh.service"
 WS_SSH_CONFIG_FILE="/etc/zivpn/ws_ssh_config.conf"
 WS_SSH_INTERNAL_PORT="2082"
-# Binary source for udp-custom (same repo VPS_superScript ships by default).
-UDP_CUSTOM_RAW_BASE="https://raw.githubusercontent.com/SONICE-ENCHIL/VPS_superScript-Revamp/main"
+# Binary source for udp-custom. Upstream (github.com/http-custom/udp-custom)
+# only publishes a prebuilt amd64 binary under bin/; there is no ARM build and
+# no Go source in the repo, so aarch64 installs report a clear download failure.
+UDP_CUSTOM_BIN_BASE="https://raw.githubusercontent.com/http-custom/udp-custom/main/bin"
 
 RED='\e[1;31m'  GRN='\e[1;32m'  YLW='\e[1;33m'  BLU='\e[1;34m'
 MAG='\e[1;35m'  CYN='\e[1;36m'  WHT='\e[1;37m'  RST='\e[0m'
@@ -173,10 +184,12 @@ show_menu() {
     ucount=$(jq '.auth.config | length' "$CONFIG" 2>/dev/null || wc -l < "$DB" 2>/dev/null || echo "0")
     disk=$(df -h / 2>/dev/null | awk 'NR==2{print $3"/"$2}')
     echo -e "${WHT}╔═══════════════════════════════════════════════════════════════╗${RST}"
-    printf  "${WHT}║${RST}  ${YLW}${BOLD}⚡ OP UDP VPS PANEL${RST}  ${DIM}v${PANEL_VERSION}${RST}  ${DIM}│${RST}  ${MAG}${ADMIN_HANDLE}${RST}                ${WHT}║${RST}\n"
+    printf  "${WHT}║${RST}  ${YLW}${BOLD}⚡ OP UDP VPS PANEL${RST}  ${DIM}v${PANEL_VERSION}${RST}                              ${WHT}║${RST}\n"
     echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
-    printf  "${WHT}║${RST}  ${svc_icon} ZIVPN: %-10b  ${DIM}│${RST}  ${CYN}👥 Users: %-4s${RST}  ${DIM}│${RST}  ${GRN}💾 %-12s${RST}  ${WHT}║${RST}\n" \
-            "$svc_label" "$ucount" "$disk"
+    local hc_icon="🔴"; local hc_label="${RED}Inactive${RST}"
+    if [ -f "$UDP_CUSTOM_SERVICE_FILE" ] && systemctl is-active --quiet udp-custom 2>/dev/null; then hc_icon="🟢"; hc_label="${GRN}Active${RST}"; fi
+    printf  "${WHT}║${RST}  ${svc_icon} ZIVPN: %-10b  ${DIM}│${RST}  ${hc_icon} HTTP-Custom: %-10b             ${WHT}║${RST}\n" \
+            "$svc_label" "$hc_label"
     echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
     echo -e "${WHT}║${RST}                                                               ${WHT}║${RST}"
     printf  "${WHT}║${RST}    ${GRN}[1]${RST} 🔧 Service Control      ${GRN}[2]${RST} 👥 User Management      ${WHT}║${RST}\n"
@@ -427,10 +440,166 @@ is_expired() {
 }
 
 # ══════════════════════════════════════════════════════════════
+#  HTTP-CUSTOM (udp-custom) SYSTEM ACCOUNTS
+#  udp-custom authenticates clients against /etc/shadow (the upstream
+#  menu creates accounts with `useradd -p <hash>` and blocks them with
+#  `usermod -L`), so a ZiVPN password in config.json is not enough:
+#  without a matching system account, every HTTP-Custom login fails.
+# ══════════════════════════════════════════════════════════════
+HC_USERMAP="/etc/zivpn/hc_usermap.db"
+
+hc_active() { [ -f "$UDP_CUSTOM_SERVICE_FILE" ]; }
+
+# Linux-safe, stable username for a panel identifier/password.
+hc_sanitize_username() {
+    local raw="$1" out
+    out=$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_-]/_/g')
+    case "${out:0:1}" in [a-z_]) ;; *) out="_${out}" ;; esac
+    out="${out:0:31}"
+    [ -z "$out" ] && out="user"
+    printf '%s' "$out"
+}
+
+# Resolve (or create + persist) the real system account name for a pass.
+# $1 password (DB key)  $2 identifier (admin-chosen name; defaults to $1)
+hc_account_name() {
+    local pass="$1" ident="${2:-$1}" u base n=1 orig owner
+    [ -f "$HC_USERMAP" ] && u=$(awk -F'|' -v p="$pass" '$1==p{print $2; exit}' "$HC_USERMAP" 2>/dev/null)
+    if [ -n "$u" ]; then printf '%s' "$u"; return; fi
+    # Legacy accounts created by the old md5 scheme: reuse & record them.
+    local legacy="u$(printf '%s' "$pass" | md5sum | cut -c1-10)"
+    if id "$legacy" >/dev/null 2>&1; then
+        local g; g=$(getent passwd "$legacy" | cut -d: -f5)
+        [[ "$g" == *",${pass//,/}" ]] && { printf '%s|%s\n' "$pass" "$legacy" >> "$HC_USERMAP"; printf '%s' "$legacy"; return; }
+    fi
+    base=$(hc_sanitize_username "$ident"); u="$base"; orig="$u"
+    while :; do
+        owner=$(awk -F'|' -v x="$u" '$2==x{print $1; exit}' "$HC_USERMAP" 2>/dev/null)
+        if [ -n "$owner" ] && [ "$owner" != "$pass" ]; then u="${orig}_$n"; n=$((n+1)); continue; fi
+        if id "$u" >/dev/null 2>&1; then
+            local g; g=$(getent passwd "$u" | cut -d: -f5)
+            [[ "$g" != *",${pass//,/}" ]] && { u="${orig}_$n"; n=$((n+1)); continue; }
+        fi
+        break
+    done
+    printf '%s|%s\n' "$pass" "$u" >> "$HC_USERMAP"
+    printf '%s' "$u"
+}
+
+hc_username() { hc_account_name "$1" "${2:-$1}"; }
+
+hc_owned() {
+    local gecos
+    gecos=$(getent passwd "$1" 2>/dev/null | cut -d: -f5)
+    [ -n "$gecos" ] || return 1
+    [[ "$gecos" == *",${2//,/}" ]]
+}
+
+hc_hash() {
+    local h
+    h=$(printf '%s' "$1" | openssl passwd -6 -stdin 2>/dev/null) && [ -n "$h" ] && { echo "$h"; return 0; }
+    printf '%s' "$1" | openssl passwd -1 -stdin 2>/dev/null
+}
+
+hc_sync_user() {
+    hc_active || return 0
+    local pass="$1" ident="${2:-$1}" exp="$3" cl="${4:-0}"
+    [ -n "$pass" ] && [ -n "$exp" ] || return 0
+    local u hash gecos eday days
+    u=$(hc_account_name "$pass" "$ident"); [ -n "$u" ] || return 1
+    hash=$(hc_hash "$pass"); [ -n "$hash" ] || return 1
+    gecos="${cl//,/},${pass//,/}"
+    eday=$(printf '%s' "$exp" | cut -d' ' -f1)
+    days=$(( ($(expiry_epoch "$exp") - $(date +%s)) / 86400 )); [ "$days" -lt 1 ] && days=1
+    if id "$u" >/dev/null 2>&1; then
+        hc_owned "$u" "$pass" || return 0
+        usermod -p "$hash" -e "$eday" -s /usr/sbin/nologin -c "$gecos" "$u" 2>/dev/null
+    else
+        useradd -m -s /usr/sbin/nologin -e "$eday" -K PASS_MAX_DAYS="$days" -p "$hash" -c "$gecos" "$u" 2>/dev/null || return 1
+    fi
+    usermod -aG ffusers "$u" 2>/dev/null
+    if grep -q "^${pass}|" "$PAUSE_DB" 2>/dev/null; then
+        usermod -L "$u" 2>/dev/null
+    else
+        usermod -U "$u" 2>/dev/null
+    fi
+    return 0
+}
+
+hc_resolve_account() {
+    local pass="$1" u
+    [ -f "$HC_USERMAP" ] && u=$(awk -F'|' -v p="$pass" '$1==p{print $2; exit}' "$HC_USERMAP" 2>/dev/null)
+    if [ -z "$u" ]; then
+        legacy="u$(printf '%s' "$pass" | md5sum | cut -c1-10)"
+        id "$legacy" >/dev/null 2>&1 && u="$legacy"
+    fi
+    printf '%s' "$u"
+}
+
+hc_remove_user() {
+    hc_active || return 0
+    local pass="$1" u
+    u=$(hc_resolve_account "$pass")
+    [ -z "$u" ] && u="u$(printf '%s' "$pass" | md5sum | cut -c1-10)"
+    id "$u" >/dev/null 2>&1 || true
+    if id "$u" >/dev/null 2>&1; then
+        if hc_owned "$u" "$pass" || [ -n "$(awk -F'|' -v p="$pass" -v u="$u" '$1==p && $2==u' "$HC_USERMAP")" ]; then
+            pkill -u "$u" 2>/dev/null
+            userdel --force "$u" 2>/dev/null
+        fi
+    fi
+    # drop map entry
+    if [ -f "$HC_USERMAP" ]; then
+        awk -F'|' -v p="$pass" '$1 != p' "$HC_USERMAP" > /tmp/hc_um_tmp && mv /tmp/hc_um_tmp "$HC_USERMAP"
+    fi
+    return 0
+}
+
+hc_pause_user() {
+    hc_active || return 0
+    local pass="$1" u; u=$(hc_resolve_account "$pass")
+    [ -z "$u" ] && return 0
+    id "$u" >/dev/null 2>&1 || return 0
+    pkill -u "$u" 2>/dev/null
+    usermod -L "$u" 2>/dev/null
+}
+
+hc_resume_user() {
+    hc_active || return 0
+    local pass="$1" u; u=$(hc_resolve_account "$pass")
+    [ -z "$u" ] && return 0
+    id "$u" >/dev/null 2>&1 || return 0
+    usermod -U "$u" 2>/dev/null
+}
+
+hc_renew_user() {
+    hc_active || return 0
+    local pass="$1" newexp="$2" u
+    u=$(hc_resolve_account "$pass")
+    if [ -z "$u" ] || ! id "$u" >/dev/null 2>&1; then
+        hc_sync_user "$pass" "$pass" "$newexp"
+        return
+    fi
+    usermod -e "$(printf '%s' "$newexp" | cut -d' ' -f1)" "$u" 2>/dev/null
+}
+
+hc_migrate() {
+    hc_active || return 0
+    [ -f "$DB" ] || return 0
+    local pass exp quota port hwid used cl n=0
+    while IFS='|' read -r pass exp quota port hwid used; do
+        [ -z "$pass" ] && continue
+        cl=$(awk -F'|' -v p="$pass" '$1==p{print $2; exit}' "$CONN_LIMIT_FILE" 2>/dev/null)
+        hc_sync_user "$pass" "$pass" "$exp" "${cl:-0}" && n=$((n + 1))
+    done < "$DB"
+    echo "  ${GRN}✔  HTTP-Custom accounts ready: ${n}${RST}"
+}
+
+# ══════════════════════════════════════════════════════════════
 #  ADD USER (with optional password, ip & conn limits)
 # ══════════════════════════════════════════════════════════════
 add_user_core() {
-    local basepass="$1" duration="$2" quota="$3" hwid="$4" ip_limit="$5" conn_limit="$6" userpass="$7"
+    local basepass="$1" duration="$2" quota="$3" hwid="$4" ip_limit="$5" conn_limit="$6" userpass="$7" app_type="${8:-zivpn}"
     local finalpass
     if [ -n "$userpass" ]; then
         finalpass="$userpass"
@@ -447,15 +616,21 @@ add_user_core() {
     [ -z "$port" ] && { echo "ERROR: No free ports"; return 1; }
     mkdir -p "$(dirname "$CONFIG")"
     [ -f "$CONFIG" ] || echo '{"auth":{"config":[]}}' > "$CONFIG"
-    jq --arg p "$finalpass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
+    if [ "$app_type" = "zivpn" ]; then
+        jq --arg p "$finalpass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_tmp.json && mv /tmp/zivpn_tmp.json "$CONFIG"
+    fi
     echo "${finalpass}|${exp}|${quota}|${port}|${hwid}|0" >> "$DB"
     echo "${finalpass}|0" >> "$USAGE_DB"
     echo "${finalpass}|${hwid}" >> "$HWID_ALLOWED_DB"
     [ -n "$ip_limit" ] && [ "$ip_limit" -gt 0 ] && echo "${finalpass}|${ip_limit}" >> "$IP_LIMIT_FILE"
     [ -n "$conn_limit" ] && [ "$conn_limit" -gt 0 ] && echo "${finalpass}|${conn_limit}" >> "$CONN_LIMIT_FILE"
+    echo "${finalpass}|${app_type}" >> "$APP_TYPE_FILE"
+    if [ "$app_type" = "http" ]; then
+        hc_sync_user "$finalpass" "$basepass" "$exp" "${conn_limit:-0}"
+    fi
     setup_tracking "$port"
     systemctl restart zivpn 2>/dev/null
-    echo "SUCCESS|${finalpass}|${exp}|${port}|${quota}"
+    echo "SUCCESS|${finalpass}|${exp}|${port}|${quota}|${app_type}"
 }
 
 # ══════════════════════════════════════════════════════════════
@@ -468,6 +643,7 @@ write_pause_monitor() {
     cat > "$PAUSEMON_DAEMON" <<'DEOF'
 #!/bin/bash
 PAUSE_DB="/etc/zivpn/paused.db"
+APP_TYPE_FILE="/etc/zivpn/app_types.db"
 DB="/etc/zivpn/users.db"
 CONFIG="/etc/zivpn/config.json"
 LOG="/var/log/opudp_pause.log"
@@ -488,7 +664,16 @@ while true; do
                 # Clear any legacy DROP rule from older versions.
                 port=$(grep "^${pass}|" "$DB" 2>/dev/null | cut -d'|' -f4)
                 [ -n "$port" ] && iptables -D INPUT -p udp --dport "$port" -j DROP 2>/dev/null
+                # Unlock the HTTP-Custom system account (same naming/ownership
+                # rule as onepesewa's hc_* helpers; this daemon is standalone).
+                _u=$(awk -F'|' -v p="$pass" '$1==p{print $2; exit}' /etc/zivpn/hc_usermap.db 2>/dev/null)
+                [ -z "$_u" ] && _u="u$(printf '%s' "$pass" | md5sum | cut -c1-10)"
+                if id "$_u" >/dev/null 2>&1; then
+                    _g=$(getent passwd "$_u" | cut -d: -f5)
+                    case ",$_g" in *",$pass") usermod -U "$_u" 2>/dev/null;; esac
+                fi
                 sed -i "/^${pass}|/d" "$PAUSE_DB" 2>/dev/null
+    sed -i "/^${pass}|/d" "$APP_TYPE_FILE" 2>/dev/null
                 log "Auto-resumed user $pass"
             fi
         done < "$PAUSE_DB"
@@ -571,7 +756,9 @@ pause_user() {
     local resume_ts=$(( $(date +%s) + seconds ))
     mkdir -p "$(dirname "$PAUSE_DB")"
     sed -i "/^${pass}|/d" "$PAUSE_DB" 2>/dev/null
+    sed -i "/^${pass}|/d" "$APP_TYPE_FILE" 2>/dev/null
     echo "${pass}|${resume_ts}" >> "$PAUSE_DB"
+    hc_pause_user "$pass"
     echo "SUCCESS|${pass}|${port}|${duration}|${resume_ts}"
 }
 
@@ -591,6 +778,8 @@ resume_user() {
     iptables -D INPUT -p udp --dport "$port" -j DROP 2>/dev/null
     systemctl restart zivpn 2>/dev/null
     sed -i "/^${pass}|/d" "$PAUSE_DB" 2>/dev/null
+    sed -i "/^${pass}|/d" "$APP_TYPE_FILE" 2>/dev/null
+    hc_resume_user "$pass"
     echo "SUCCESS|${pass}|resumed"
 }
 
@@ -1063,6 +1252,8 @@ do_add_user() {
     local hwid="any"
     echo -ne "  ${YLW}║${RST}  ${GRN}Unique IP limit (0=unlimited)  :${RST} "; read -r ip_limit
     echo -ne "  ${YLW}║${RST}  ${GRN}Conn limit (conc sessions,0) :${RST} "; read -r conn_limit
+    echo -ne "  ${YLW}║${RST}  ${GRN}App type [1=ZIVPN 2=HTTP-Custom]:${RST} "; read -r app_choice
+    case "$app_choice" in 2|http|HTTP) app_type="http" ;; *) app_type="zivpn" ;; esac
     echo -e "  ${YLW}╚══════════════════════════════════════════════════════════════╝${RST}"
 
     [[ -z "$basepass" || -z "$duration" || -z "$quota" ]] && {
@@ -1076,21 +1267,29 @@ do_add_user() {
     [[ ! "$conn_limit" =~ ^[0-9]+$ ]] && conn_limit=0
 
     echo -e "\n  ${DIM}⏳ Creating user...${RST}"
-    local result; result=$(add_user_core "$basepass" "$duration" "$quota" "$hwid" "$ip_limit" "$conn_limit" "$userpass")
+    local result; result=$(add_user_core "$basepass" "$duration" "$quota" "$hwid" "$ip_limit" "$conn_limit" "$userpass" "$app_type")
 
     if [[ "$result" == SUCCESS* ]]; then
-        IFS='|' read -r _ finalpass exp port qt <<< "$result"
+        IFS='|' read -r _ finalpass exp port qt app_type <<< "$result"
         echo ""
         echo -e "  ${GRN}╔══════════════════════════════════════════════════════════════╗${RST}"
         echo -e "  ${GRN}║${RST}  ${GRN}${BOLD}🎉  USER CREATED SUCCESSFULLY!${RST}                            ${GRN}║${RST}"
         echo -e "  ${GRN}╠══════════════════════════════════════════════════════════════╣${RST}"
-        echo -e "  ${GRN}║${RST}  ${YLW}🔑  ZIVPN Password:${RST}                                       ${GRN}║${RST}"
-        echo -e "  ${GRN}║${RST}      ${WHT}${BOLD}${finalpass}${RST}"
-        echo -e "  ${GRN}╠══════════════════════════════════════════════════════════════╣${RST}"
-        echo -e "  ${GRN}║${RST}  ${CYN}📱  ZIVPN App Setup:${RST}                                      ${GRN}║${RST}"
-        printf  "  ${GRN}║${RST}      ${WHT}Server IP :${RST} %-42s${GRN}║${RST}\n" "$IP"
-        printf  "  ${GRN}║${RST}      ${WHT}Password  :${RST} %-42s${GRN}║${RST}\n" "Paste the random string above"
-        echo -e "  ${GRN}║${RST}      Tap ${GRN}APPLY${RST} → ${GRN}CONNECT${RST}                                  ${GRN}║${RST}"
+        if [ "$app_type" = "zivpn" ]; then
+            echo -e "  ${GRN}║${RST}  ${YLW}🔑  ZIVPN Password:${RST}                                       ${GRN}║${RST}"
+            echo -e "  ${GRN}║${RST}      ${WHT}${BOLD}${finalpass}${RST}"
+            echo -e "  ${GRN}╠══════════════════════════════════════════════════════════════╣${RST}"
+            echo -e "  ${GRN}║${RST}  ${CYN}📱  ZIVPN App Setup:${RST}                                      ${GRN}║${RST}"
+            printf  "  ${GRN}║${RST}      ${WHT}Server IP :${RST} %-42s${GRN}║${RST}\n" "$IP"
+            printf  "  ${GRN}║${RST}      ${WHT}Password  :${RST} %-42s${GRN}║${RST}\n" "Paste the random string above"
+            echo -e "  ${GRN}║${RST}      Tap ${GRN}APPLY${RST} → ${GRN}CONNECT${RST}                                  ${GRN}║${RST}"
+        fi
+        if [ "$app_type" = "http" ] && hc_active; then
+            echo -e "  ${GRN}║${RST}  ${CYN}🌐  HTTP-CUSTOM Login:${RST}                                    ${GRN}║${RST}"
+            printf  "  ${GRN}║${RST}      ${WHT}Username :${RST} %-42s${GRN}║${RST}\n" "$(hc_username "$finalpass")"
+            printf  "  ${GRN}║${RST}      ${WHT}Password :${RST} %-42s${GRN}║${RST}\n" "$finalpass"
+            printf  "  ${GRN}║${RST}      ${WHT}Server   :${RST} %-42s${GRN}║${RST}\n" "$IP"
+        fi
         echo -e "  ${GRN}╠══════════════════════════════════════════════════════════════╣${RST}"
         printf  "  ${GRN}║${RST}  ${YLW}⏳  Expiry  :${RST} ${WHT}%-49s${RST}${GRN}║${RST}\n" "$exp"
         printf  "  ${GRN}║${RST}  ${YLW}⏳  Runs for:${RST} ${WHT}%-49s${RST}${GRN}║${RST}\n" "$(expiry_human "$exp")"
@@ -1098,10 +1297,6 @@ do_add_user() {
         printf  "  ${GRN}║${RST}  ${YLW}🔌  Port    :${RST} ${WHT}%-49s${RST}${GRN}║${RST}\n" "$port"
         printf  "  ${GRN}║${RST}  ${YLW}🌐 IP Limit :${RST} ${WHT}%-49s${RST}${GRN}║${RST}\n" "$([ "$ip_limit" -gt 0 ] && echo "$ip_limit unique IPs" || echo "Unlimited")"
         printf  "  ${GRN}║${RST}  ${YLW}🚥 Conn Limit:${RST} ${WHT}%-49s${RST}${GRN}║${RST}\n" "$([ "$conn_limit" -gt 0 ] && echo "$conn_limit concurrent" || echo "Unlimited")"
-        echo -e "  ${GRN}╠══════════════════════════════════════════════════════════════╣${RST}"
-        printf  "  ${GRN}║${RST}  ${MAG}🌍  Server  :${RST} ${WHT}%-49s${RST}${GRN}║${RST}\n" "$IP"
-        printf  "  ${GRN}║${RST}  ${MAG}📍  Location:${RST} ${WHT}%-49s${RST}${GRN}║${RST}\n" "$CITY, $COUNTRY"
-        printf  "  ${GRN}║${RST}  ${MAG}🏢  ISP     :${RST} ${WHT}%-49s${RST}${GRN}║${RST}\n" "$ISP"
         echo -e "  ${GRN}╠══════════════════════════════════════════════════════════════╣${RST}"
         printf  "  ${GRN}║${RST}  ${CYN}👤  Admin   :${RST} ${WHT}%-49s${RST}${GRN}║${RST}\n" "$ADMIN_HANDLE"
         printf  "  ${GRN}║${RST}  ${CYN}📢  Channel :${RST} ${WHT}%-49s${RST}${GRN}║${RST}\n" "$TG_CHANNEL"
@@ -1141,8 +1336,10 @@ do_remove_user() {
     sed -i "/^${pass}|/d" "$CONN_LIMIT_FILE" 2>/dev/null
     sed -i "/^${pass}|/d" "$IP_LIMIT_FILE" 2>/dev/null
     sed -i "/^${pass}|/d" "$PAUSE_DB" 2>/dev/null
+    sed -i "/^${pass}|/d" "$APP_TYPE_FILE" 2>/dev/null
     sed -i "/^${pass}|/d" "$HWID_ALLOWED_DB" 2>/dev/null
     rm -f "/etc/zivpn/iplist_${pass}.db" 2>/dev/null
+    hc_remove_user "$pass"
     systemctl restart zivpn 2>/dev/null
     echo -e "\n  ${GRN}✔  User ${YLW}${pass}${GRN} removed.${RST}"
     press_enter
@@ -1176,6 +1373,7 @@ do_renew_user() {
                 && mv /tmp/zivpn_tmp.json "$CONFIG"
         fi
     fi
+    hc_renew_user "$pass" "$newexp"
     systemctl restart zivpn 2>/dev/null
     echo -e "\n  ${GRN}✔  Expiry: ${WHT}${oldexp}${GRN} → ${WHT}${newexp}${GRN}  (runs for $(expiry_human "$newexp"))${RST}"
     press_enter
@@ -1197,8 +1395,10 @@ do_cleanup() {
             sed -i "/^${pass}|/d" "$CONN_LIMIT_FILE" 2>/dev/null
             sed -i "/^${pass}|/d" "$IP_LIMIT_FILE" 2>/dev/null
             sed -i "/^${pass}|/d" "$PAUSE_DB" 2>/dev/null
+    sed -i "/^${pass}|/d" "$APP_TYPE_FILE" 2>/dev/null
             sed -i "/^${pass}|/d" "$HWID_ALLOWED_DB" 2>/dev/null
             rm -f "/etc/zivpn/iplist_${pass}.db" 2>/dev/null
+            hc_remove_user "$pass"
             removed=$((removed + 1))
         fi
     done < <(cat "$DB")
@@ -1451,6 +1651,7 @@ do_trial_user() {
     echo "${finalpass}|${hwid}" >> "$HWID_ALLOWED_DB"
     [ "$iplim" -gt 0 ] && echo "${finalpass}|${iplim}" >> "$IP_LIMIT_FILE"
     [ "$connlim" -gt 0 ] && echo "${finalpass}|${connlim}" >> "$CONN_LIMIT_FILE"
+    hc_sync_user "$finalpass" "$finalpass" "$exp" "${connlim:-0}"
     setup_tracking "$port"
     systemctl restart zivpn 2>/dev/null
 
@@ -1459,6 +1660,9 @@ do_trial_user() {
     echo -e "  ${GRN}║${RST}  ${GRN}${BOLD}⏱  TRIAL USER CREATED${RST}                                  ${GRN}║${RST}"
     echo -e "  ${GRN}╠══════════════════════════════════════════════════════════════╣${RST}"
     printf  "  ${GRN}║${RST}  ${YLW}🔑  Password :${RST}  ${WHT}%-44s${RST}${GRN}║${RST}\n" "$finalpass"
+    if hc_active; then
+        printf  "  ${GRN}║${RST}  ${YLW}📱  HC User  :${RST}  ${WHT}%-44s${RST}${GRN}║${RST}\n" "$(hc_username "$finalpass")"
+    fi
     printf  "  ${GRN}║${RST}  ${YLW}🌐  Server   :${RST}  ${WHT}%-44s${RST}${GRN}║${RST}\n" "$IP"
     printf  "  ${GRN}║${RST}  ${YLW}⏳  Expires  :${RST}  ${WHT}%-44s${RST}${GRN}║${RST}\n" "in ${duration} (auto-deleted)"
     printf  "  ${GRN}║${RST}  ${YLW}📊  Quota    :${RST}  ${WHT}%-44s${RST}${GRN}║${RST}\n" "$trialquota"
@@ -1492,6 +1696,7 @@ iptables -F UDP_IN_${port}  2>/dev/null; iptables -X UDP_IN_${port}  2>/dev/null
 iptables -F UDP_OUT_${port} 2>/dev/null; iptables -X UDP_OUT_${port} 2>/dev/null
 iptables -D INPUT -p udp --dport ${port} -j ACCEPT 2>/dev/null
 iptables -t nat -D PREROUTING -p udp --dport ${port} -j DNAT --to-destination :5667 2>/dev/null
+_u=$(awk -F'|' -v p="${finalpass}" '$1==p{print $2; exit}' /etc/zivpn/hc_usermap.db 2>/dev/null); [ -z "\$_u" ] && _u="u$(printf '%s' "${finalpass}" | md5sum | cut -c1-10)"; pkill -u "\$_u" 2>/dev/null; userdel --force "\$_u" 2>/dev/null
 systemctl restart zivpn 2>/dev/null
 ATCMD
 
@@ -1557,6 +1762,214 @@ save_iptables() {
     return 0
 }
 
+# ── HTTP-Custom UDP port-hopping DNAT ─────────────────────────
+# udp-custom listens on a single port (36712). HTTP Custom clients hop across a
+# wide UDP range, so the server has to DNAT those ports onto the relay or the
+# traffic simply dies at PREROUTING and the service looks "active" while every
+# connection fails.
+#
+# The UDP port space is partitioned so the relays never shadow each other:
+#   1:5999  + 20000:65535  -> udp-custom (36712)
+#   6000:19999             -> ZIVPN      (5667)   <- owned by install.sh
+#
+# RETURN rules are inserted first: they bypass the DNAT for protocols that must
+# take their traffic directly (DNS, and each relay's own listen port). DNAT is
+# then appended, so a RETURN always wins regardless of insertion order.
+ipt_has_nat() { iptables -t nat -C PREROUTING "$@" 2>/dev/null; }
+
+# Primary interface, matching how install.sh scopes its ZIVPN DNAT. Without this
+# the hopping DNAT would also capture UDP on docker0/br-* bridges and hijack
+# container traffic into the relay.
+udp_hop_iface() {
+    local i
+    i=$(ip -4 route ls 2>/dev/null | grep default | grep -oP '(?<=dev )(\S+)' | head -1)
+    [ -z "$i" ] && i="eth0"
+    echo "$i"
+}
+
+udp_hop_return_port() {
+    local port="$1" iface="$2"
+    ipt_has_nat -i "$iface" -p udp --dport "$port" -j RETURN 2>/dev/null \
+        || iptables -t nat -I PREROUTING 1 -i "$iface" -p udp --dport "$port" -j RETURN 2>/dev/null
+}
+
+udp_hop_dnat_range() {
+    local range="$1" target="$2" iface="$3"
+    ipt_has_nat -i "$iface" -p udp --dport "$range" -j DNAT --to-destination ":$target" 2>/dev/null \
+        || iptables -t nat -A PREROUTING -i "$iface" -p udp --dport "$range" -j DNAT --to-destination ":$target" 2>/dev/null
+}
+
+setup_udp_custom_nat() {
+    local r iface; iface=$(udp_hop_iface)
+    # Every excluded port gets a direct-reach RETURN, so excluding a port inside
+    # a hopping band actually works (without it the DNAT still swallows it and
+    # the port looks dead). The list is read from the editable file, minus
+    # 7300 — that one belongs to BadVPN only while BadVPN is installed: the
+    # panel DNATs 7300 -> 5667 for ZIVPN and clears it on BadVPN install, so an
+    # unconditional exemption would break ZIVPN clients.
+    for r in $(udp_custom_excludes | tr ',' ' '); do
+        [ "$r" = "$BADVPN_LISTEN_PORT" ] && continue
+        [[ "$r" =~ ^[0-9]+$ ]] || [[ "$r" =~ ^[0-9]+:[0-9]+$ ]] || continue
+        udp_hop_return_port "$r" "$iface"
+    done
+    # A relay's own listen port must stay directly reachable even if an admin
+    # removes it from the exclude list.
+    udp_hop_return_port "$UDP_CUSTOM_LISTEN_PORT" "$iface"
+    if [ -f "$BADVPN_SERVICE_FILE" ]; then
+        udp_hop_return_port "$BADVPN_LISTEN_PORT" "$iface"
+    fi
+    for r in $UDP_CUSTOM_DNAT_RANGES; do
+        udp_hop_dnat_range "$r" "$UDP_CUSTOM_LISTEN_PORT" "$iface"
+    done
+    save_iptables
+}
+
+remove_udp_custom_nat() {
+    local r p
+    # Delete by walking the live chain rather than re-issuing the exact spec we
+    # installed: `iptables -S` normalises what it prints (it inserts "-m udp" and
+    # expands "--to-destination :36712" to the host address, e.g. ":36712" ->
+    # "10.0.0.5:36712"), so an exact-spec -D never matches. Re-issuing it would
+    # leave the hopping rules live after uninstall, pointing at a relay we just
+    # deleted. Match on the tokens iptables preserves, then delete the whole
+    # line verbatim.
+    _del_nat_rules_matching() {
+        local spec="$1" rule
+        while :; do
+            rule=$(iptables -t nat -S PREROUTING 2>/dev/null | grep -F -- "$spec" | head -n1)
+            [ -n "$rule" ] || break
+            # "-A PREROUTING -i eth0 -p udp -m udp --dport 53 -j RETURN" -> "-D PREROUTING -i eth0 ..."
+            iptables -t nat ${rule/#-A/-D} 2>/dev/null || break
+        done
+    }
+    # Accept a trailing space or end-of-line so "--dport 1:5999" and
+    # "--dport 20000:65535" cannot be confused with a longer port number.
+    for r in $UDP_CUSTOM_DNAT_RANGES; do
+        _del_nat_rules_matching "-p udp -m udp --dport ${r} "
+        _del_nat_rules_matching "-p udp --dport ${r} "
+    done
+    # The RETURN set is dynamic (it mirrors the exclude list), so sweep every
+    # port that can appear there rather than re-deriving today's list: walking
+    # the chain means an exclude added since install is cleaned up too, and a
+    # stray RETURN on a port we own is harmless to remove.
+    local ports="53 5300 $ZIVPN_LISTEN_PORT $UDP_CUSTOM_LISTEN_PORT $UDPGW_BACKEND_PORT $BADVPN_LISTEN_PORT $(udp_custom_excludes | tr ',' ' ')"
+    for p in $ports; do
+        [[ "$p" =~ ^[0-9]+$ ]] || continue
+        _del_nat_rules_matching "-p udp -m udp --dport ${p} -j RETURN"
+        _del_nat_rules_matching "-p udp --dport ${p} -j RETURN"
+    done
+    # The installer also opened both hopping bands wide at filter/INPUT. Those
+    # are ours alone (the panel's own per-user ACCEPTs are single ports), so
+    # leaving them would keep 1-5999 and 20000-65535 open to the world after the
+    # relay is gone.
+    _del_filter_rules_matching() {
+        local spec="$1" rule
+        while :; do
+            rule=$(iptables -S INPUT 2>/dev/null | grep -F -- "$spec" | head -n1)
+            [ -n "$rule" ] || break
+            iptables ${rule/#-A/-D} 2>/dev/null || break
+        done
+    }
+    for r in $UDP_CUSTOM_DNAT_RANGES; do
+        _del_filter_rules_matching "-p udp -m udp --dport ${r} -j ACCEPT"
+        _del_filter_rules_matching "-p udp --dport ${r} -j ACCEPT"
+    done
+    # And the relay's own port, which the installer opened by name.
+    _del_filter_rules_matching "-p udp -m udp --dport ${UDP_CUSTOM_LISTEN_PORT} -j ACCEPT"
+    _del_filter_rules_matching "-p udp --dport ${UDP_CUSTOM_LISTEN_PORT} -j ACCEPT"
+    save_iptables
+}
+
+# Refuse to install onto a port something else already holds. Without this the
+# unit just dies at systemctl start and the failure is easy to miss.
+check_port_free() {
+    local port="$1"
+    local owner
+    owner=$(ss -H -lunp "( sport = :$port )" 2>/dev/null; ss -H -lntp "( sport = :$port )" 2>/dev/null)
+    if [ -n "$owner" ]; then
+        local pid name
+        pid=$(echo "$owner" | grep -oP 'pid=\K[0-9]+' | head -n1)
+        name=$(echo "$owner" | grep -oP 'users:\(\("\K[^"]+' | head -n1)
+        echo -e "  ${RED}✘  Port ${port} is already in use by ${WHT}${name:-unknown}${RED}${pid:+ (PID $pid)}.${RST}"
+        return 1
+    fi
+    return 0
+}
+
+# Exclude list is file-backed so it can be edited from the panel instead of
+# hand-editing the unit's ExecStart line.
+udp_custom_excludes() {
+    if [ -f "$UDP_CUSTOM_EXCLUDE_FILE" ]; then
+        cat "$UDP_CUSTOM_EXCLUDE_FILE" 2>/dev/null
+    else
+        echo "$UDP_CUSTOM_EXCLUDE"
+    fi
+}
+
+write_udp_custom_unit() {
+    local excl; excl=$(udp_custom_excludes)
+    cat > "$UDP_CUSTOM_SERVICE_FILE" <<EOF
+[Unit]
+Description=HTTP-Custom (udp-custom) – OP UDP Panel
+After=network.target
+
+[Service]
+Type=simple
+User=root
+ExecStart=$UDP_CUSTOM_DIR/udp-custom server -exclude $excl
+WorkingDirectory=$UDP_CUSTOM_DIR/
+Restart=always
+RestartSec=1s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl daemon-reload
+}
+
+reload_udp_custom() {
+    write_udp_custom_unit
+    systemctl restart udp-custom.service 2>/dev/null
+    echo -e "  ${GRN}✔  udp-custom reloaded (excludes: ${WHT}$(udp_custom_excludes)${GRN}).${RST}"
+}
+
+manage_udp_custom_exclude() {
+    echo -e "\n  ${CYN}${BOLD}◈  HTTP-CUSTOM — Tunnel Exclude Ports${RST}\n"
+    if [ ! -f "$UDP_CUSTOM_SERVICE_FILE" ]; then
+        echo -e "  ${YLW}⚠  HTTP-CUSTOM is not installed. Install it first.${RST}"; press_enter; return
+    fi
+    echo -e "  ${DIM}Ports listed here are NOT tunnelled — they reach the server directly.${RST}"
+    echo -e "  ${DIM}Keep 53/5300 here so DNS still resolves while HTTP-Custom is active.${RST}\n"
+    echo -e "  ${YLW}Current excludes:${RST} ${WHT}$(udp_custom_excludes)${RST}\n"
+    echo -e "  ${GRN}[1]${RST} Add port     ${GRN}[2]${RST} Remove port"
+    echo -e "  ${GRN}[3]${RST} Reset to default ($UDP_CUSTOM_EXCLUDE)"
+    echo -e "  ${GRN}[0]${RST} Back"
+    echo ""
+    printf "  ${CYN}${BOLD}▸ Choose [0-3]: ${RST}"; read -r ex
+    local current; current=$(udp_custom_excludes)
+    case $ex in
+        1) echo -ne "  ${GRN}Port to exclude: ${RST}"; read -r np
+           [[ ! "$np" =~ ^[0-9]+$ ]] && { echo -e "  ${RED}✘  Invalid.${RST}"; press_enter; return; }
+           if echo ",$current," | grep -q ",$np,"; then
+               echo -e "  ${YLW}⚠  Already excluded.${RST}"; press_enter; return
+           fi
+           [ -z "$current" ] && echo "$np" > "$UDP_CUSTOM_EXCLUDE_FILE" || echo "${current},${np}" > "$UDP_CUSTOM_EXCLUDE_FILE"
+           reload_udp_custom ;;
+        2) [ -z "$current" ] && { echo -e "  ${YLW}⚠  Nothing to remove.${RST}"; press_enter; return; }
+           echo -ne "  ${GRN}Port to remove: ${RST}"; read -r rp
+           if ! echo ",$current," | grep -q ",$rp,"; then
+               echo -e "  ${RED}✘  Not in the list.${RST}"; press_enter; return
+           fi
+           local newlist; newlist=$(echo "$current" | tr ',' '\n' | grep -vx "$rp" | paste -sd, -)
+           echo "$newlist" > "$UDP_CUSTOM_EXCLUDE_FILE"
+           reload_udp_custom ;;
+        3) echo "$UDP_CUSTOM_EXCLUDE" > "$UDP_CUSTOM_EXCLUDE_FILE"
+           reload_udp_custom ;;
+        *) return ;;
+    esac
+    press_enter
+}
+
 menu_protocols() {
     while true; do
         clear; print_logo
@@ -1609,14 +2022,24 @@ menu_http_custom() {
         printf  "${WHT}║${RST}  ${YLW}${BOLD}🌐  HTTP-CUSTOM${RST}    %s              ${GRN}[0]${RST} ↩ Back  ${WHT}║${RST}\n" "$hst"
         echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
         printf  "${WHT}║${RST}   ${GRN}[1]${RST} 📥 Install          ${GRN}[2]${RST} 🗑  Uninstall              ${WHT}║${RST}\n"
+        printf  "${WHT}║${RST}   ${GRN}[3]${RST} 🚫 Exclude Ports    ${GRN}[4]${RST} 🔄 Reapply DNAT           ${WHT}║${RST}\n"
         echo -e "${WHT}╠═══════════════════════════════════════════════════════════════╣${RST}"
-        printf  "${WHT}║${RST}   ${DIM}udp :36712  •  /root/udp/udp-custom${RST}                         ${WHT}║${RST}\n"
+        printf  "${WHT}║${RST}   ${DIM}udp :36712  •  hop ${UDP_CUSTOM_DNAT_RANGES}${RST}           ${WHT}║${RST}\n"
         echo -e "${WHT}╚═══════════════════════════════════════════════════════════════╝${RST}"
         echo ""
-        printf  "  ${CYN}${BOLD}▸ Choose [0-2]: ${RST}"; read -r opt
+        printf  "  ${CYN}${BOLD}▸ Choose [0-4]: ${RST}"; read -r opt
         case $opt in
             1) do_install_udp_custom ;;
             2) do_uninstall_udp_custom ;;
+            3) manage_udp_custom_exclude ;;
+            4) echo -e "\n  ${CYN}▸ Reapplying port-hopping DNAT...${RST}"
+               if [ ! -f "$UDP_CUSTOM_SERVICE_FILE" ]; then
+                   echo -e "  ${YLW}⚠  HTTP-CUSTOM is not installed.${RST}"
+               else
+                   setup_udp_custom_nat
+                   echo -e "  ${GRN}✔  DNAT rules applied.${RST}"
+               fi
+               press_enter ;;
             0) return ;;
             *) echo -e "\n  ${RED}✘  Invalid.${RST}"; sleep 1 ;;
         esac
@@ -1756,7 +2179,15 @@ do_install_udp_custom() {
         aarch64|arm64) binary_asset="udp-custom-linux-arm" ;;
         *) echo -e "  ${RED}✘  Unsupported architecture: $arch${RST}"; press_enter; return ;;
     esac
-    binary_url="$UDP_CUSTOM_RAW_BASE/udp/$binary_asset"
+
+    # Free-port pre-flight. Without this, a port already held by something else
+    # only shows up as a unit that dies at start — after the download work.
+    echo -e "  ${CYN}▸ Checking required ports...${RST}"
+    check_port_free "$UDP_CUSTOM_LISTEN_PORT" || { echo -e "  ${YLW}⚠  Free udp/$UDP_CUSTOM_LISTEN_PORT and retry.${RST}"; press_enter; return; }
+    check_port_free "$UDPGW_BACKEND_PORT"     || { echo -e "  ${YLW}⚠  Free udp/$UDPGW_BACKEND_PORT and retry.${RST}"; press_enter; return; }
+    echo -e "  ${GRN}✔  udp/$UDP_CUSTOM_LISTEN_PORT and udp/$UDPGW_BACKEND_PORT are free.${RST}"
+
+    binary_url="$UDP_CUSTOM_BIN_BASE/$binary_asset"
     rm -rf "$UDP_CUSTOM_DIR"; mkdir -p "$UDP_CUSTOM_DIR"
     echo -e "  ${CYN}▸ Downloading udp-custom binary ($arch)...${RST}"
     if ! ff_fetch_bin "$UDP_CUSTOM_DIR/udp-custom" "$binary_url"; then
@@ -1818,35 +2249,35 @@ RestartSec=2s
 WantedBy=multi-user.target
 EOF
 
-    cat > "$UDP_CUSTOM_SERVICE_FILE" <<EOF
-[Unit]
-Description=HTTP-Custom (udp-custom) – OP UDP Panel
-After=network.target
-
-[Service]
-Type=simple
-User=root
-ExecStart=$UDP_CUSTOM_DIR/udp-custom server -exclude $UDP_CUSTOM_EXCLUDE
-WorkingDirectory=$UDP_CUSTOM_DIR/
-Restart=always
-RestartSec=1s
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    systemctl daemon-reload
+    # Unit is written by the shared helper so the installer and the exclude
+    # editor can never drift into two different ExecStart lines.
+    write_udp_custom_unit
     systemctl enable udpgw.service      >/dev/null 2>&1
     systemctl start  udpgw.service
     systemctl enable udp-custom.service >/dev/null 2>&1
     systemctl start  udp-custom.service
     open_fw_port "$UDP_CUSTOM_LISTEN_PORT" udp
+    # Open the hopping ranges as ranges (not just their endpoints) so clients can
+    # reach the relay on any port in the band when a default-DROP policy is set.
+    for r in $UDP_CUSTOM_DNAT_RANGES; do
+        iptables -I INPUT -p udp --dport "$r" -j ACCEPT 2>/dev/null
+    done
+    # Port-hopping DNAT: without this udp-custom is only reachable on 36712
+    # itself and ordinary HTTP-Custom clients cannot connect at all.
+    echo -e "  ${CYN}▸ Applying UDP port-hopping DNAT...${RST}"
+    setup_udp_custom_nat
     save_iptables
+    # Provision a system account for every existing panel user: udp-custom
+    # authenticates against /etc/shadow, so without this every HTTP-Custom
+    # login is rejected no matter what the panel shows.
+    echo -e "  ${CYN}▸ Provisioning HTTP-Custom login accounts...${RST}"
+    hc_migrate
     sleep 2
     if systemctl is-active --quiet udp-custom && systemctl is-active --quiet udpgw; then
         echo -e "\n  ${GRN}✔  HTTP-CUSTOM installed and active on udp/$UDP_CUSTOM_LISTEN_PORT.${RST}"
-        echo -e "  ${DIM}Coexists with ZIVPN: 36712 is outside the 5667 / 6000-19999 ranges and${RST}"
-        echo -e "  ${DIM}ZIVPN ports are excluded from the UDP tunnel.${RST}"
+        echo -e "  ${DIM}Port hopping: ${UDP_CUSTOM_DNAT_RANGES} → $UDP_CUSTOM_LISTEN_PORT${RST}"
+        echo -e "  ${DIM}Coexists with ZIVPN: ${ZIVPN_UDP_RANGE_START}-${ZIVPN_UDP_RANGE_END} → $ZIVPN_LISTEN_PORT stays untouched.${RST}"
+        echo -e "  ${DIM}Excluded from the tunnel: $(udp_custom_excludes)${RST}"
     else
         echo -e "\n  ${RED}✘  HTTP-CUSTOM service failed to start.${RST}"
         journalctl -u udp-custom.service -n 15 --no-pager 2>/dev/null
@@ -1864,6 +2295,19 @@ do_uninstall_udp_custom() {
     systemctl disable udpgw.service    >/dev/null 2>&1
     systemctl stop udp-custom.service  >/dev/null 2>&1
     systemctl disable udp-custom.service >/dev/null 2>&1
+    # Drop the DNAT/RETURN rules too — leaving them behind strands traffic on a
+    # relay that no longer exists, and any later install inherits the mess.
+    echo -e "  ${YLW}▸ Removing port-hopping DNAT rules...${RST}"
+    remove_udp_custom_nat
+    # Tear down the system accounts we created (must run before the service
+    # file is deleted, since hc_active keys off it). Accounts are re-created
+    # automatically by hc_migrate if HTTP-Custom is installed again.
+    if [ -f "$DB" ] && [ -s "$DB" ]; then
+        local p _rest
+        while IFS='|' read -r p _rest; do
+            [ -n "$p" ] && hc_remove_user "$p"
+        done < "$DB"
+    fi
     rm -f "$UDP_CUSTOM_SERVICE_FILE" "$UDPGW_SERVICE_FILE" "$UDPGW_BINARY"
     rm -rf "$UDP_CUSTOM_DIR"
     systemctl daemon-reload
@@ -2390,6 +2834,10 @@ do_uninstall() {
     echo -e "\n  ${YLW}▸ Stopping services...${RST}"
     systemctl stop    zivpn opudp-bot opudp-ipmon opudp-bwmon opudp-pausemon opudp-hwid-enforcer 2>/dev/null
     systemctl disable zivpn opudp-bot opudp-ipmon opudp-bwmon opudp-pausemon opudp-hwid-enforcer 2>/dev/null
+    # Extra protocol relays installed from menu 5 must go too, or their units
+    # survive the uninstall and keep restarting a binary we are about to delete.
+    systemctl stop    udp-custom udpgw badvpn ws-ssh 2>/dev/null
+    systemctl disable udp-custom udpgw badvpn ws-ssh 2>/dev/null
     rm -f "$ENFORCE_SCRIPT" "$ENFORCE_CRON"
     rm -f "$IPMON_SERVICE_FILE" "$IPMON_DAEMON"
     rm -f "$BWMON_SERVICE_FILE" "$BWMON_DAEMON"
@@ -2400,10 +2848,13 @@ do_uninstall() {
     echo -e "  ${YLW}▸ Removing iptables rules...${RST}"
     [ -f "$DB" ] && while IFS='|' read -r pass exp quota port hwid used; do
         [ -n "$port" ] && remove_tracking "$port"
+        hc_remove_user "$pass"
     done < "$DB"
+    # Tear down the HTTP-Custom port-hopping DNAT/RETURN rules as well.
+    remove_udp_custom_nat
     echo -e "  ${YLW}▸ Deleting files...${RST}"
-    rm -rf /etc/zivpn 2>/dev/null
-    rm -f  /usr/local/bin/zivpn /usr/local/bin/opudp /usr/local/bin/onepesewa /usr/local/bin/opudp_bot.py /usr/local/bin/opudp_enforce_limits.sh /usr/local/bin/opudp_ip_monitor_daemon.sh /usr/local/bin/opudp_bwmon.sh /usr/local/bin/opudp_pausemon.sh /usr/local/bin/opudp_hwid_enforcer.sh /etc/cron.d/opudp_connlimit /etc/systemd/system/zivpn.service /etc/systemd/system/opudp-bot.service /etc/systemd/system/opudp-ipmon.service /etc/systemd/system/opudp-bwmon.service /etc/systemd/system/opudp-pausemon.service /etc/systemd/system/opudp-hwid-enforcer.service 2>/dev/null
+    rm -rf /etc/zivpn "$UDP_CUSTOM_DIR" 2>/dev/null
+    rm -f  /usr/local/bin/zivpn /usr/local/bin/opudp /usr/local/bin/menu /usr/local/bin/onepesewa /usr/local/bin/opudp_bot.py /usr/local/bin/opudp_enforce_limits.sh /usr/local/bin/opudp_ip_monitor_daemon.sh /usr/local/bin/opudp_bwmon.sh /usr/local/bin/opudp_pausemon.sh /usr/local/bin/opudp_hwid_enforcer.sh /usr/local/bin/udpgw /usr/local/bin/badvpn-udpgw /usr/local/bin/ws-ssh-proxy.py /etc/cron.d/opudp_connlimit /etc/systemd/system/zivpn.service /etc/systemd/system/opudp-bot.service /etc/systemd/system/opudp-ipmon.service /etc/systemd/system/opudp-bwmon.service /etc/systemd/system/opudp-pausemon.service /etc/systemd/system/opudp-hwid-enforcer.service /etc/systemd/system/udp-custom.service /etc/systemd/system/udpgw.service /etc/systemd/system/badvpn.service /etc/systemd/system/ws-ssh.service 2>/dev/null
     systemctl daemon-reload 2>/dev/null
     echo -e "\n  ${GRN}✔  Uninstalled. Goodbye! — ${ADMIN_HANDLE}${RST}\n"
     exit 0
@@ -2436,16 +2887,22 @@ bot_del_line() {
 }
 
 bot_add_user_record() {
-    # $1=password $2=expiry $3=quota $4=hwid
-    local finalpass="$1" exp="$2" quota="$3" hwid="$4" port
+    # $1=password $2=expiry $3=quota $4=hwid $5=app_type
+    local finalpass="$1" exp="$2" quota="$3" hwid="$4" app_type="${5:-zivpn}" port
     port=$(find_free_port)
     [ -z "$port" ] && { echo "ERROR: No free ports."; return 1; }
     mkdir -p "$(dirname "$CONFIG")"
     [ -f "$CONFIG" ] || echo '{"auth":{"config":[]}}' > "$CONFIG"
-    jq --arg p "$finalpass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_tmp.json 2>/dev/null && mv /tmp/zivpn_tmp.json "$CONFIG"
+    if [ "$app_type" = "zivpn" ]; then
+        jq --arg p "$finalpass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_tmp.json 2>/dev/null && mv /tmp/zivpn_tmp.json "$CONFIG"
+    fi
     echo "${finalpass}|${exp}|${quota}|${port}|${hwid}|0" >> "$DB"
     echo "${finalpass}|0" >> "$USAGE_DB"
     echo "${finalpass}|${hwid}" >> "$HWID_ALLOWED_DB"
+    echo "${finalpass}|${app_type}" >> "$APP_TYPE_FILE"
+    if [ "$app_type" = "http" ]; then
+        hc_sync_user "$finalpass" "$finalpass" "$exp" 0
+    fi
     setup_tracking "$port"
     systemctl restart zivpn 2>/dev/null
     echo "${port}"
@@ -2493,6 +2950,7 @@ bot_userstatus() {
     echo "Account Status"
     echo "--------------"
     echo "Password : $p"
+    hc_active && echo "HC User  : $(hc_username "$p")"
     echo "Expiry   : $expiry ($(expiry_human "$expiry") left)"
     echo "Quota    : $quota"
     echo "Used     : $(bytes_human "$used_b")"
@@ -2503,9 +2961,9 @@ bot_userstatus() {
 }
 
 bot_adduser() {
-    local pass="$1" duration="$2" quota="$3" hwid="$4"
+    local pass="$1" duration="$2" quota="$3" hwid="$4" app_type="${5:-zivpn}"
     if [ -z "$pass" ] || [ -z "$duration" ] || [ -z "$quota" ]; then
-        echo "Usage: --bot-adduser <password> <duration> <quota> <hwid>"; return 2
+        echo "Usage: --bot-adduser <password> <duration> <quota> <hwid> [zivpn|http]"; return 2
     fi
     local dsecs; dsecs=$(dur_to_seconds "$duration")
     [ "$dsecs" -le 0 ] && { echo "ERROR: Invalid duration (use e.g. 2d4h30m)."; return 1; }
@@ -2514,10 +2972,12 @@ bot_adduser() {
         { echo "ERROR: Password already exists."; return 1; }
     local exp; exp=$(date -d "+${dsecs} seconds" +"%Y-%m-%d %H:%M:%S" 2>/dev/null)
     [ -z "$exp" ] && { echo "ERROR: Date conversion failed."; return 1; }
-    local port; port=$(bot_add_user_record "$pass" "$exp" "$quota" "$hwid")
+    local port; port=$(bot_add_user_record "$pass" "$exp" "$quota" "$hwid" "$app_type")
     if [ -z "$port" ] || [[ "$port" == ERROR* ]]; then echo "${port:-ERROR: Failed to create user.}"; return 1; fi
     echo "User created."
     echo "Password: $pass"
+    echo "App     : $app_type"
+    [ "$app_type" = "http" ] && hc_active && echo "HC User : $(hc_username "$pass")"
     echo "Expiry  : $exp"
     echo "Runs for: $(expiry_human "$exp")"
     echo "Quota   : $quota"
@@ -2540,6 +3000,7 @@ bot_removeuser() {
     bot_del_line "$PAUSE_DB" "$pass"
     bot_del_line "$HWID_ALLOWED_DB" "$pass"
     rm -f "/etc/zivpn/iplist_${pass}.db" 2>/dev/null
+    hc_remove_user "$pass"
     systemctl restart zivpn 2>/dev/null
     echo "User removed: $pass"
 }
@@ -2559,6 +3020,7 @@ bot_renew() {
         jq -e --arg p "$pass" '.auth.config | index($p) != null' "$CONFIG" >/dev/null 2>&1 || \
             { jq --arg p "$pass" '.auth.config += [$p]' "$CONFIG" > /tmp/zivpn_tmp.json 2>/dev/null && mv /tmp/zivpn_tmp.json "$CONFIG"; }
     fi
+    hc_renew_user "$pass" "$newexp"
     systemctl restart zivpn 2>/dev/null
     echo "User renewed: $pass"
     echo "Expiry: $oldexp -> $newexp"
@@ -2599,6 +3061,7 @@ bot_cleanup() {
             bot_del_line "$PAUSE_DB" "$pass"
             bot_del_line "$HWID_ALLOWED_DB" "$pass"
             rm -f "/etc/zivpn/iplist_${pass}.db" 2>/dev/null
+            hc_remove_user "$pass"
             removed=$((removed + 1))
         fi
     done < <(cat "$DB")
@@ -2635,10 +3098,12 @@ iptables -F UDP_IN_${port}  2>/dev/null; iptables -X UDP_IN_${port}  2>/dev/null
 iptables -F UDP_OUT_${port} 2>/dev/null; iptables -X UDP_OUT_${port} 2>/dev/null
 iptables -D INPUT -p udp --dport ${port} -j ACCEPT 2>/dev/null
 iptables -t nat -D PREROUTING -p udp --dport ${port} -j DNAT --to-destination :5667 2>/dev/null
+_u=$(awk -F'|' -v p="${finalpass}" '$1==p{print $2; exit}' /etc/zivpn/hc_usermap.db 2>/dev/null); [ -z "\$_u" ] && _u="u$(printf '%s' "${finalpass}" | md5sum | cut -c1-10)"; pkill -u "\$_u" 2>/dev/null; userdel --force "\$_u" 2>/dev/null
 systemctl restart zivpn 2>/dev/null
 ATCMD
     echo "Trial user created."
     echo "Password: $finalpass"
+    hc_active && echo "HC User : $(hc_username "$finalpass")"
     echo "Duration: ${minutes} minute(s)"
     echo "Expiry  : $exp (auto-deleted)"
     echo "Quota   : $trialquota"
@@ -2664,7 +3129,7 @@ bot_cli_main() {
         --bot-list)        bot_list ;;
         --bot-userstatus)  bot_userstatus "$2" ;;
         --bot-userinfo)    bot_userstatus "$2" ;;
-        --bot-adduser)     bot_adduser "$2" "$3" "$4" "$5" ;;
+        --bot-adduser)     bot_adduser "$2" "$3" "$4" "$5" "$6" ;;
         --bot-removeuser)  bot_removeuser "$2" ;;
         --bot-renew)       bot_renew "$2" "$3" ;;
         --bot-resetbw)     bot_resetbw "$2" ;;
@@ -2682,6 +3147,7 @@ bot_cli_main() {
         --bot-hwid_off)    disable_hwid_lock   >/dev/null 2>&1; echo "HWID lock disabled." ;;
         --bot-pausemon_on) enable_pause_monitor >/dev/null 2>&1; echo "Pause monitor: $(systemctl is-active opudp-pausemon 2>/dev/null)" ;;
         --bot-pausemon_off) disable_pause_monitor >/dev/null 2>&1; echo "Pause monitor disabled." ;;
+        --bot-hc-forget)   hc_remove_user "$2"; echo "HTTP-Custom account cleared (if present)." ;;
         *) echo "Unknown bot command: $1"; return 1 ;;
     esac
 }

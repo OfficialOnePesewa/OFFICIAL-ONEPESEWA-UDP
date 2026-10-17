@@ -238,6 +238,7 @@ if wget -qO /usr/local/bin/onepesewa "$PANEL_URL"; then
     chmod +x /usr/local/bin/onepesewa
     ok "Panel installed → /usr/local/bin/onepesewa"
     ln -sf /usr/local/bin/onepesewa /usr/local/bin/opudp 2>/dev/null || true
+    ln -sf /usr/local/bin/onepesewa /usr/local/bin/menu 2>/dev/null || true
     info "Alias: opudp → onepesewa"
 else
     err "Failed to download panel from $PANEL_URL"
